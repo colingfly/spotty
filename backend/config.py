@@ -41,6 +41,11 @@ class Settings:
     # OCR
     tesseract_cmd: Optional[str] = os.getenv("TESSERACT_CMD")
 
+    # ACE-Step
+    acestep_api_url: str = os.getenv("ACESTEP_API_URL", "http://127.0.0.1:8001")
+    audio_output_dir: str = os.getenv("AUDIO_OUTPUT_DIR", os.path.join(os.path.dirname(__file__), "audio_output"))
+    audio_upload_dir: str = os.getenv("AUDIO_UPLOAD_DIR", os.path.join(os.path.dirname(__file__), "audio_uploads"))
+
     # Misc
     max_upload_mb: int = _safe_int(os.getenv("MAX_UPLOAD_MB", "8"), 8)
 

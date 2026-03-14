@@ -1,12 +1,30 @@
-# Ignore environment files
+# Environment
 .env
 backend/.env
 frontend/.env
 
-# Other common ignores
+# Python
 __pycache__/
-node_modules/
 *.pyc
- 
+*.pyo
+venv/
+.venv/
 
- 
+# Node
+node_modules/
+dist/
+
+# Audio files (generated)
+backend/audio_output/
+backend/audio_uploads/
+
+# Database
+*.db
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
