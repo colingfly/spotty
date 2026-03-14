@@ -13,8 +13,11 @@ export default function DashboardPage({ sid }: Props) {
 
   useEffect(() => {
     fetch(`${API_BASE}/api/me/taste?spotify_user_id=${encodeURIComponent(sid)}`)
-      .then((r) => r.json())
-      .then(setTaste)
+      .then((r) => {
+        if (!r.ok) return null;
+        return r.json();
+      })
+      .then((data) => { if (data) setTaste(data); })
       .catch(() => {});
   }, [sid]);
 
@@ -53,7 +56,7 @@ export default function DashboardPage({ sid }: Props) {
           <TasteRadar taste={taste} size={260} />
           {taste && (
             <div style={{ marginTop: 8, fontSize: 12, color: "#666" }}>
-              Top genres: {taste.genres.slice(0, 5).join(", ")}
+              Top genres: {(taste.genres || []).slice(0, 5).join(", ")}
             </div>
           )}
         </div>
