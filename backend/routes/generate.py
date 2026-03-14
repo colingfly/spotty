@@ -218,9 +218,9 @@ def generation_status(generation_id: int):
             gen.status = "completed"
             gen.completed_at = datetime.now(timezone.utc)
 
-            # Parse result to get audio path
+            # Parse result to get audio URL
             # ACE-Step returns result as a JSON string containing an array of
-            # objects like: [{"file": "/path/to/audio.flac", "url": "...", ...}]
+            # objects like: [{"file": "/v1/audio?path=...", "status": 1, ...}]
             result_data = result.get("result", "")
             if isinstance(result_data, str):
                 try:
@@ -229,22 +229,29 @@ def generation_status(generation_id: int):
                     log.warning("Could not parse ACE-Step result: %s", result_data[:200] if result_data else "")
                     result_data = []
 
-            # Extract audio file path from result
-            audio_file_path = ""
+            # Extract audio URL from result
+            audio_url = ""
             if isinstance(result_data, list) and result_data:
                 first = result_data[0]
                 if isinstance(first, dict):
-                    audio_file_path = first.get("file", "")
+                    audio_url = first.get("file", "")
                 elif isinstance(first, str):
-                    audio_file_path = first
+                    audio_url = first
             elif isinstance(result_data, dict):
-                audio_file_path = result_data.get("file", "")
+                audio_url = result_data.get("file", "")
 
-            if audio_file_path:
+            if audio_url:
                 try:
-                    # Determine extension from the source file
-                    ext = os.path.splitext(audio_file_path)[1] or ".wav"
-                    audio_bytes = acestep.download_audio(audio_file_path)
+                    # The "file" field is already a URL path like /v1/audio?path=...
+                    # Download directly from the full URL
+                    download_url = f"{acestep.base_url}{audio_url}"
+                    log.info("Downloading audio from: %s", download_url)
+                    import requests as req
+                    audio_resp = req.get(download_url, timeout=60)
+                    audio_resp.raise_for_status()
+                    audio_bytes = audio_resp.content
+
+                    ext = ".mp3"  # ACE-Step generates mp3 by default
                     local_path = os.path.join(
                         settings.audio_output_dir, f"{gen.id}{ext}"
                     )

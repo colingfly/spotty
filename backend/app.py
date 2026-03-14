@@ -22,7 +22,7 @@ def create_app() -> Flask:
 
     CORS(
         app,
-        resources={r"/api/*": {"origins": settings.cors_origins}},
+        resources={r"/*": {"origins": settings.cors_origins}},
         supports_credentials=False,
     )
 
