@@ -1,192 +1,163 @@
-import React, { useState } from "react";
-import { API_BASE } from "../config";
-import type { Artist } from "../types";
+import React, { useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { Camera, Check, ExternalLink, Sparkles, Upload } from "lucide-react";
+import CameraScan from "../components/CameraScan";
+import { EmptyState, PlaceholderArt } from "../components/ui";
+import { useToast } from "../hooks/useToast";
+import { api } from "../lib/api";
+import type { ScanArtist } from "../types";
 
-type Props = { sid: string };
+export const FESTIVAL_KEY = "trill.festival";
 
-async function compressToJpeg(
-  file: File,
-  maxDim = 1600,
-  quality = 0.9
-): Promise<Blob> {
+async function compressToJpeg(file: File, maxDim = 1600, quality = 0.9): Promise<Blob> {
   if (!file.type.startsWith("image/")) return file;
   const img = await createImageBitmap(file);
   const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
-  const w = Math.round(img.width * scale);
-  const h = Math.round(img.height * scale);
   const canvas = document.createElement("canvas");
-  canvas.width = w;
-  canvas.height = h;
+  canvas.width = Math.round(img.width * scale);
+  canvas.height = Math.round(img.height * scale);
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("Canvas not supported");
-  ctx.drawImage(img, 0, 0, w, h);
-  return new Promise((resolve, reject) =>
-    canvas.toBlob(
-      (b) => (b ? resolve(b) : reject(new Error("toBlob failed"))),
-      "image/jpeg",
-      quality
-    )
-  );
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  return new Promise((resolve, reject) => canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob failed"))), "image/jpeg", quality));
 }
 
-export default function ScanPage({ sid }: Props) {
-  const [selFile, setSelFile] = useState<File | null>(null);
+export function mapScanResults(data: any): ScanArtist[] {
+  return ((data?.items || []) as any[]).map((x) => ({
+    id: x.spotify_artist_id,
+    name: x.resolved_name,
+    candidate: x.candidate,
+    genres: x.genres || [],
+    image: x.image,
+    external_url: x.external_url,
+    popularity: x.popularity ?? null,
+    in_library: !!x.in_library,
+    matchTotal: Math.round((x.scores?.total ?? 0) * 100),
+    nameSim: Math.round(x.scores?.name ?? 0),
+    genreSim: Math.round((x.scores?.genre ?? 0) * 100),
+  }));
+}
+
+export default function ScanPage() {
+  const toast = useToast();
+  const navigate = useNavigate();
+  const [file, setFile] = useState<File | null>(null);
+  const [preview, setPreview] = useState<string | null>(null);
   const [scanning, setScanning] = useState(false);
-  const [artists, setArtists] = useState<Artist[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const [results, setResults] = useState<ScanArtist[] | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [useCamera, setUseCamera] = useState(false);
 
-  const handleScan = async () => {
-    if (!selFile) return;
+  const pick = (f: File | null) => {
+    setFile(f);
+    setPreview(f ? URL.createObjectURL(f) : null);
+  };
+
+  const onResults = (items: ScanArtist[]) => {
+    setResults(items);
+    setSelected(new Set(items.slice(0, 6).map((a) => a.id)));
+    if (items.length === 0) toast.info("No artists recognised. Try a sharper, straight-on photo.");
+  };
+
+  const scan = async () => {
+    if (!file) return;
     setScanning(true);
-    setError(null);
     try {
-      const payload = await compressToJpeg(selFile);
       const form = new FormData();
-      form.append("spotify_user_id", sid);
-      form.append("file", payload, "poster.jpg");
-
-      const res = await fetch(`${API_BASE}/api/scan`, {
-        method: "POST",
-        body: form,
-      });
-      const data = await res.json();
-
-      if (!res.ok) {
-        setError(
-          data?.message ||
-            (data?.error === "ocr_unavailable"
-              ? "OCR is unavailable on the server."
-              : `Scan failed (HTTP ${res.status})`)
-        );
-        return;
-      }
-
-      const items: Artist[] = (data.items || []).map((x: any) => ({
-        id: x.spotify_artist_id,
-        name: x.resolved_name,
-        genres: x.genres || [],
-        image: x.image,
-        external_url: x.external_url,
-        popularity: x.popularity ?? undefined,
-        matchTotal: Math.round((x.scores?.total ?? 0) * 100),
-        nameSim: Math.round(x.scores?.name ?? 0),
-        genreSim: Math.round((x.scores?.genre ?? 0) * 100),
-        fromScan: true,
-      }));
-      items.sort((a, b) => (b.matchTotal ?? 0) - (a.matchTotal ?? 0));
-      setArtists(items);
-      setSelFile(null);
+      form.append("file", await compressToJpeg(file), "poster.jpg");
+      const data = await api.post<any>("/api/scan", form);
+      onResults(mapScanResults(data));
     } catch (e: any) {
-      setError(e?.message || "Scan failed.");
+      toast.error(e.message);
     } finally {
       setScanning(false);
     }
   };
 
-  return (
-    <div>
-      <h2 style={{ fontSize: 32, marginBottom: 4 }}>Poster Scanner</h2>
-      <p style={{ color: "#888", marginBottom: 24 }}>
-        Scan a concert poster to find artists that match your taste
-      </p>
+  const toggle = (id: string) => setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
-      <div
-        style={{
-          display: "flex",
-          gap: 12,
-          alignItems: "center",
-          marginBottom: 16,
-          flexWrap: "wrap",
-        }}
-      >
-        <input
-          type="file"
-          accept="image/*"
-          capture="environment"
-          onChange={(e) => setSelFile(e.target.files?.[0] ?? null)}
-          style={{ color: "#ccc" }}
-        />
-        <button
-          onClick={handleScan}
-          disabled={!selFile || scanning}
-          style={{
-            padding: "8px 16px",
-            background: selFile && !scanning ? "#1db954" : "#333",
-            color: "white",
-            border: "none",
-            borderRadius: 8,
-            cursor: selFile && !scanning ? "pointer" : "not-allowed",
-          }}
-        >
-          {scanning ? "Scanning..." : "Scan Image"}
-        </button>
+  const chosen = useMemo(() => (results || []).filter((a) => selected.has(a.id)), [results, selected]);
+
+  const makeTrack = () => {
+    sessionStorage.setItem(FESTIVAL_KEY, JSON.stringify(chosen.map((a) => a.name)));
+    navigate("/studio?mode=festival");
+  };
+
+  return (
+    <div className="page">
+      <div className="page-head">
+        <div>
+          <h1 className="page-title">Poster scanner</h1>
+          <p className="page-sub">see a flyer on a pole. point your phone at it. trill reads the names, finds them on Spotify and scores each against what you already play.</p>
+        </div>
+        <div className="segmented">
+          <button className={!useCamera ? "active" : ""} onClick={() => setUseCamera(false)}><Upload size={14} style={{ verticalAlign: -2 }} /> Upload</button>
+          <button className={useCamera ? "active" : ""} onClick={() => setUseCamera(true)}><Camera size={14} style={{ verticalAlign: -2 }} /> Camera</button>
+        </div>
       </div>
 
-      {error && (
-        <div style={{ color: "#ff4444", marginBottom: 12 }}>{error}</div>
-      )}
-
-      {artists.length === 0 && !error && (
-        <div style={{ color: "#555" }}>
-          Upload a poster image to scan for artists.
+      <div className="grid" style={{ gridTemplateColumns: "minmax(0, 2fr) minmax(0, 3fr)" }}>
+        <div className="card">
+          {useCamera ? (
+            <CameraScan onResults={onResults} />
+          ) : (
+            <div className="stack">
+              <label className="empty" style={{ cursor: "pointer", padding: preview ? 0 : undefined, overflow: "hidden" }}>
+                {preview ? <img src={preview} alt="Poster preview" style={{ width: "100%", maxHeight: 360, objectFit: "contain", borderRadius: 18 }} /> : (
+                  <>
+                    <Upload size={22} style={{ margin: "0 auto 8px" }} />
+                    <h3>Drop a poster or click to choose</h3>
+                    <p className="small">JPG, PNG or HEIC. Fill the frame with the text, avoid glare.</p>
+                  </>
+                )}
+                <input type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => pick(e.target.files?.[0] ?? null)} />
+              </label>
+              <div className="row">
+                <button className="btn btn-primary" onClick={scan} disabled={!file || scanning}>
+                  {scanning ? <span className="spinner" /> : <Sparkles size={15} />} {scanning ? "Reading poster…" : "Scan poster"}
+                </button>
+                {file && <button className="btn btn-ghost" onClick={() => { pick(null); setResults(null); }}>Clear</button>}
+              </div>
+            </div>
+          )}
         </div>
-      )}
 
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))",
-          gap: 12,
-          marginTop: 16,
-        }}
-      >
-        {artists.map((a) => (
-          <div
-            key={a.id}
-            style={{
-              background: "#1a1a1a",
-              borderRadius: 10,
-              padding: 12,
-            }}
-          >
-            <img
-              src={a.image || "https://via.placeholder.com/300x300?text=?"}
-              alt={a.name}
-              style={{
-                width: "100%",
-                height: 200,
-                objectFit: "cover",
-                borderRadius: 8,
-              }}
-            />
-            <h3 style={{ margin: "10px 0 4px", fontSize: 16 }}>{a.name}</h3>
-            <div style={{ fontSize: 12, color: "#888" }}>
-              {a.genres?.slice(0, 3).join(", ")}
-            </div>
-            <div style={{ fontSize: 12, color: "#aaa", marginTop: 6, lineHeight: 1.6 }}>
-              <div>
-                <strong>Match:</strong> {a.matchTotal ?? "—"}%
+        <div className="stack">
+          {results === null ? (
+            <EmptyState title="Results appear here" body="Each recognised act gets a match score from name confidence, genre overlap with your profile and who you already listen to." />
+          ) : results.length === 0 ? (
+            <EmptyState title="No artists found" body="The OCR didn't pick out any names. Try a higher-resolution photo." />
+          ) : (
+            <>
+              <div className="card card-sm row between">
+                <div>
+                  <div style={{ fontWeight: 700 }}>{results.length} acts recognised · {chosen.length} selected</div>
+                  <div className="tiny dim">Select the acts you'd see, then build a track from the night.</div>
+                </div>
+                <button className="btn btn-ai" onClick={makeTrack} disabled={chosen.length === 0}><Sparkles size={15} /> Make a festival track</button>
               </div>
-              <div>
-                <strong>Name:</strong> {a.nameSim ?? "—"}% ·{" "}
-                <strong>Genre:</strong> {a.genreSim ?? "—"}%
+              <div className="grid grid-auto" style={{ gap: 10 }}>
+                {results.map((a) => {
+                  const on = selected.has(a.id);
+                  return (
+                    <div key={a.id} className={`artist-tile selectable ${on ? "selected" : ""}`} onClick={() => toggle(a.id)} role="checkbox" aria-checked={on}>
+                      {a.image ? <img src={a.image} alt={a.name} loading="lazy" /> : <PlaceholderArt size={28} />}
+                      {on && <span className="check"><Check size={14} /></span>}
+                      <span className="rank">{a.matchTotal}% match</span>
+                      <div className="overlay">
+                        <div className="name truncate">{a.name}</div>
+                        <div className="genres truncate">{a.in_library ? "In your top artists · " : ""}{a.genres.slice(0, 2).join(", ")}</div>
+                        <a className="tiny" href={a.external_url || "#"} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} style={{ marginTop: 4, display: "inline-flex", gap: 4, alignItems: "center" }}>
+                          Spotify <ExternalLink size={10} />
+                        </a>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
-            </div>
-            <a
-              href={a.external_url || "#"}
-              target="_blank"
-              rel="noreferrer"
-              style={{
-                display: "inline-block",
-                marginTop: 8,
-                fontSize: 12,
-                color: "#1db954",
-              }}
-            >
-              Open in Spotify
-            </a>
-          </div>
-        ))}
+            </>
+          )}
+        </div>
       </div>
     </div>
   );

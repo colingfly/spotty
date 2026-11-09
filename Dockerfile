@@ -1,35 +1,33 @@
-# Dockerfile (repo root)
-FROM python:3.13-slim
+# Dockerfile (repo root) - trill backend
+FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
-# --- System packages ---
-# - tesseract-ocr (+ eng data) for OCR
-# - libgl1, libglib2.0-0 (OpenCV runtime)
-# - libsm6, libxext6, libxrender1 (some OpenCV builds want these)
-# - build-essential (gcc, g++) in case a wheel falls back to source build)
-# - curl, git are just handy during pip resolves
+# tesseract for the poster scanner, libgl/glib for OpenCV, libsndfile for waveforms
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr tesseract-ocr-eng \
-    libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
-    build-essential curl git \
+    libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 libsndfile1 \
+    build-essential curl \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# --- Python deps ---
 COPY backend/requirements.txt .
-
-# Make sure we have the latest build tooling so wheels resolve correctly
 RUN pip install --upgrade pip setuptools wheel && \
-    pip install --no-cache-dir -r requirements.txt && \
-    pip install --no-cache-dir gunicorn
+    pip install --no-cache-dir -r requirements.txt
 
-# --- App code ---
 COPY backend/ ./
 
-# Render provides $PORT; gunicorn will bind to it.
-ENV PORT=8080
-CMD ["bash","-lc","gunicorn app:app --bind 0.0.0.0:${PORT}"]
+# Generated audio lives here; mount a volume in production so it survives deploys.
+RUN mkdir -p /app/audio_output
+ENV AUDIO_OUTPUT_DIR=/app/audio_output \
+    APP_ENV=production \
+    PORT=8080
+
+EXPOSE 8080
+
+# One worker so the in-memory rate limiter and completion worker have a single
+# source of truth. Threads handle concurrent polling; raise --threads before --workers.
+CMD ["bash", "-lc", "gunicorn app:app --bind 0.0.0.0:${PORT} --workers 1 --threads 8 --timeout 120"]

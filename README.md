@@ -1,239 +1,170 @@
-# Spotty
+# trill
 
-AI music generation driven by your Spotify listening DNA.
+![trill](frontend/public/trill-wordmark.png)
 
-Spotty analyzes your Spotify listening history to build a multi-dimensional taste profile, then uses that profile to generate original music via [ACE-Step 1.5](https://github.com/ace-step/ACE-Step) — a state-of-the-art AI music generation model running on your local GPU.
+ai music from what you actually play. trill makes a song out of your rotation, then finds the shows worth pulling up to.
 
-## How It Works
+trill reads your top artists, maps them to eight audio dimensions and a weighted genre profile, has Claude write a production brief, and renders it with [ACE-Step 1.5](https://github.com/ace-step/ACE-Step) on your own GPU in about twenty seconds.
 
 ```
-Spotify API ──▶ Top Artists ──▶ Last.fm Genre Tags ──▶ Genre-to-Audio Inference
-                                                              │
-                                                    ┌─────────▼──────────┐
-                                                    │   Taste Profile    │
-                                                    │  8 audio features  │
-                                                    │  + genre weights   │
-                                                    └─────────┬──────────┘
-                                                              │
-                                              Caption Engine (taste → prompt)
-                                                              │
-                                                    ┌─────────▼──────────┐
-                                                    │   ACE-Step 1.5     │
-                                                    │  Text-to-Music AI  │
-                                                    │  (local GPU)       │
-                                                    └─────────┬──────────┘
-                                                              │
-                                                         .mp3 output
+Spotify top artists ─▶ Last.fm genre tags ─▶ 8-axis taste profile
+                                                      │
+                               ┌──────────────────────▼──────────────────────┐
+                               │  Composer                                   │
+                               │  Claude (claude-opus-5-5) writes the brief: │
+                               │  style caption · lyrics · BPM · key · title │
+                               │  Template engine as offline fallback        │
+                               └──────────────────────┬──────────────────────┘
+                                                      │
+                                          ACE-Step 1.5 (local GPU) ─▶ .mp3
+                                                      │
+                               background worker saves audio, duration, waveform
 ```
 
-1. **OAuth** — Connect your Spotify account
-2. **Profile** — Spotty fetches your top 50 artists, resolves genres via Last.fm, and infers 8 audio dimensions using a curated genre-to-feature mapping
-3. **Caption** — Your taste profile is converted into a natural language prompt (e.g., *"trap, rap, hip hop, rage, plugg track. high-energy, powerful, driving, uplifting..."*)
-4. **Generate** — The prompt is sent to ACE-Step 1.5 running locally, which produces an original track in ~20 seconds
+## What it does
 
-## Features
+**Six ways to make a track**
 
-- **Taste-to-Track** — One click: generate a song that matches your Spotify DNA
-- **Mood Sliders** — Adjust 8 audio dimensions (energy, danceability, valence, etc.) before generating
-- **Lyric Mode** — Write lyrics with `[verse]`/`[chorus]` tags, generate music in your taste profile's style
-- **Taste Radar** — Interactive SVG radar chart visualizing your 8-dimension audio profile
-- **Library** — Browse, favorite, and replay all generated tracks
-- **Poster Scanner** — OCR a concert poster image, find and identify artists
+| Mode | What you give it | What happens |
+|------|------------------|--------------|
+| Taste to Track | Nothing | A track that sits in the middle of your library |
+| Mood Sliders | Drag the radar or sliders | Your profile, bent toward tonight |
+| Lyric Mode | Lyrics, or a theme | Claude writes lyrics in your sound if you only give a theme |
+| Artist Fusion | 2 or 3 of your top artists | Their genre profiles are blended 70/30 with yours, described sonically, never by name |
+| Creative Brief | A sentence or two | The brief leads, your profile sets the palette |
+| Festival Lineup | Names from a scanned poster | One track for the whole bill |
+
+Every mode accepts a preset (Late Night Drive, Gym, Deep Focus, Heartbreak, House Party, Sunrise, Rage, Lo-fi Study), a vocals toggle, a length from 15 to 240 seconds and up to three takes rendered with different seeds.
+
+**Preview before you render.** The Studio can compose the brief without touching the GPU. You see the caption, lyrics, BPM and key, edit any of them, then render.
+
+**Sound DNA.** Claude writes a short, specific read of your taste for the dashboard: a headline, a summary, signature sounds, eras, and suggestions for what to try next. Cached a week, rewritten when your profile rebuilds.
+
+**A real library.** Persistent bottom player with waveform scrubbing, queue, keyboard control (space). Search across titles, captions and lyrics. Filter by mode or favorites, sort by plays, rename inline, download as MP3.
+
+**Poster scanner.** Photograph a lineup. Tesseract reads it, Spotify resolves the names, each act is scored on name confidence, genre overlap with your profile and co-occurrence with artists you already play. Select the acts and send them to Festival mode.
 
 ## Architecture
 
 ```
-┌──────────────────┐     ┌──────────────────────┐     ┌──────────────────┐
-│  React Frontend  │────▶│    Flask Backend      │────▶│  ACE-Step 1.5    │
-│  Vite + TS       │     │    SQLite + ORM       │     │  Local GPU       │
-│  :5180           │     │    :8888              │     │  :8001           │
-└──────────────────┘     └──────────┬───────────┘     └──────────────────┘
-                                   │
-                          ┌────────▼────────┐
-                          │  External APIs  │
-                          │  Spotify OAuth  │
-                          │  Last.fm Tags   │
-                          └─────────────────┘
+frontend/  React 18 + TypeScript + Vite        :5180
+backend/   Flask + SQLAlchemy (SQLite/Postgres) :8888
+           ├─ routes/      auth, spotify, generate, scan
+           ├─ services/    llm (Claude), caption_engine, taste, genre_analyzer,
+           │               acestep_client, generation_service, worker, media
+           └─ tests/       37 pytest tests, no network
+ACE-Step   separate process, your GPU          :8001
 ```
 
-### Backend Services
+### Security model
 
-| Service | File | Purpose |
-|---------|------|---------|
-| `spotify_client.py` | Spotify API wrapper | OAuth token refresh, top artists, search |
-| `artist_genre_map.py` | Last.fm integration | Artist → genre tag resolution with in-memory cache |
-| `genre_analyzer.py` | Genre inference engine | Maps 100+ genres to 8 audio feature dimensions |
-| `taste.py` | Taste profiler | Builds/caches user taste profiles (24hr TTL) |
-| `caption_engine.py` | Prompt builder | Converts taste profiles into ACE-Step generation prompts |
-| `acestep_client.py` | ACE-Step API client | Task submission, polling, audio download |
-| `audio_analyzer.py` | Librosa analysis | Audio feature extraction from preview clips (fallback) |
-| `ocr.py` | Tesseract OCR | Concert poster text extraction |
+Every `/api/*` route requires a bearer token issued at the end of the Spotify OAuth flow. Tokens are signed with `FLASK_SECRET_KEY` and encode the Spotify user id, so a request can only ever read or change its own user's data. Audio URLs carry a separate signature bound to the generation id because `<audio>` cannot send headers. OAuth uses a signed `state` parameter. Generate and LLM endpoints are rate limited per user.
 
-### API Endpoints
+### Composer
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/login` | Initiate Spotify OAuth flow |
-| `GET` | `/callback` | Handle OAuth callback, store tokens |
-| `GET` | `/api/me/taste` | Fetch user taste profile |
-| `GET` | `/api/me/top-artists` | Get user's top artists with genres |
-| `POST` | `/api/generate/taste-to-track` | Generate from taste profile |
-| `POST` | `/api/generate/custom` | Generate with mood slider overrides |
-| `POST` | `/api/generate/lyric-mode` | Generate with custom lyrics |
-| `GET` | `/api/generate/status/:id` | Poll generation status |
-| `GET` | `/api/audio/:id` | Stream generated audio |
-| `GET` | `/api/generate/history` | List past generations |
-| `POST` | `/api/scan` | Upload image for OCR artist detection |
-| `GET` | `/api/acestep/health` | Check ACE-Step availability |
+`services/llm.py` calls Claude through the official `anthropic` SDK using structured outputs (`messages.parse` with Pydantic models), a cached system prompt, and `effort: low` for sub-two-second briefs. If no key is configured, or a call fails or is declined, `services/caption_engine.py` produces the brief from a deterministic template with genre-specific instrument palettes. The response tells the UI which engine ran.
 
-## Genre Inference System
+### Taste profile
 
-Since Spotify deprecated its audio-features API for new apps (Nov 2024), Spotty uses a custom inference pipeline:
+Spotify removed the audio-features API for new apps in late 2024, so trill infers the eight dimensions itself. Each top artist's genres (Spotify's, or Last.fm's when Spotify returns none) are weighted by rank and by whether the artist also appears in your last four weeks, then mapped through a database of 100-plus genre profiles with keyword modifiers for unknown tags. The weighted genre list is stored alongside the feature vector and sent to the composer.
 
-1. **Last.fm API** — Fetches top genre tags for each artist (free, no auth restrictions, covers millions of artists)
-2. **Genre Profiles** — A curated database of 100+ genre-to-audio-feature mappings based on musicological research
-3. **Weighted Aggregation** — Position-based decay weighting across a user's top artists
-4. **Keyword Modifiers** — Fuzzy matching for unknown genres (e.g., "dark trap" → trap baseline + dark modifier)
+### Background completion
 
-The system maps each genre to 8 dimensions:
-- **Danceability** — Beat regularity and rhythmic drive
-- **Energy** — Intensity and loudness
-- **Valence** — Musical positivity/mood
-- **Acousticness** — Acoustic vs. electronic production
-- **Instrumentalness** — Vocal presence
-- **Liveness** — Live performance qualities
-- **Speechiness** — Spoken word / rap density
-- **Tempo** — BPM
-
-## Tech Stack
-
-**Backend:** Python 3.11+, Flask, SQLAlchemy, SQLite, librosa, pytesseract, rapidfuzz
-
-**Frontend:** React 18, TypeScript, Vite, React Router v7
-
-**AI:** ACE-Step 1.5 (self-hosted, turbo mode w/ 8 inference steps, 0.6B LM planner)
-
-**External APIs:** Spotify Web API (OAuth + user data), Last.fm API (artist genre tags)
-
-**Deployment:** Docker, Render (backend), Vercel (frontend), Cloudflare Tunnel (GPU bridge)
+A daemon thread polls ACE-Step for every active generation every three seconds and saves the audio, duration (mutagen) and a 96-bucket RMS waveform (soundfile or librosa) as soon as a task finishes. Closing the browser no longer strands a render. Status endpoints also sync on read, so the two paths never disagree.
 
 ## Setup
 
 ### Prerequisites
 
-- Python 3.11+
-- Node.js 18+
-- NVIDIA GPU with 8GB+ VRAM
-- [ACE-Step 1.5](https://github.com/ace-step/ACE-Step) installed locally
-- Spotify Developer App ([create one here](https://developer.spotify.com/dashboard))
+- Python 3.11+ and Node 18+
+- An NVIDIA GPU with 8 GB+ VRAM running [ACE-Step 1.5](https://github.com/ace-step/ACE-Step) (`uv run acestep-api`, port 8001)
+- A Spotify developer app with `http://127.0.0.1:8888/callback` as a redirect URI and your account added under User Management
+- Optional but recommended: an Anthropic API key
 
-### 1. Clone
-
-```bash
-git clone https://github.com/colingfly/spotty.git
-cd spotty
-```
-
-### 2. Backend
+### Run it
 
 ```bash
+# backend
 cd backend
-cp ../.env.example .env
-# Edit .env with your Spotify credentials
+cp ../.env.example .env        # fill in Spotify credentials, optionally ANTHROPIC_API_KEY
 pip install -r requirements.txt
-python app.py
-# Runs on http://127.0.0.1:8888
-```
+python app.py                  # http://127.0.0.1:8888
 
-### 3. Frontend
-
-```bash
+# frontend
 cd frontend
 npm install
-npm run dev
-# Runs on http://localhost:5180
+npm run dev                    # http://localhost:5180
+
+# tests
+cd backend && python -m pytest
+cd frontend && npm run typecheck
 ```
 
-### 4. ACE-Step
+Open http://localhost:5180 and connect Spotify. Production lives at https://trill.ai. Without ACE-Step running you can still browse your profile and preview briefs; the GPU pill in the nav turns green when it is reachable.
 
-```bash
-# In your ACE-Step 1.5 directory
-uv run acestep-api
-# Runs on http://127.0.0.1:8001
+### Environment variables
+
+See `.env.example` for the full list. The ones that matter:
+
+| Variable | Purpose |
+|----------|---------|
+| `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`, `SPOTIFY_REDIRECT_URI` | OAuth |
+| `FLASK_SECRET_KEY` | Signs session tokens and audio links. Auto-generated for dev, required in production |
+| `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` | Enables the Claude composer and Sound DNA. Default model `claude-opus-5-5` |
+| `ACESTEP_API_URL` | Where ACE-Step listens |
+| `FRONTEND_URL`, `CORS_ALLOW_ORIGINS` | Redirect target after login and allowed origins |
+| `DATABASE_URL` | SQLite by default; Postgres via `postgresql+psycopg://` |
+| `MAX_VARIATIONS`, `MAX_DURATION_SECONDS`, `RATE_LIMIT_GENERATE` | Guardrails |
+
+Frontend: `VITE_API_BASE` points at the backend when it is not on `127.0.0.1:8888`.
+
+## API
+
+All routes except `/login`, `/callback`, `/api/health/*`, `/api/generate/presets` and `/api/audio/*` require `Authorization: Bearer <token>`.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/login` | Start Spotify OAuth (`?next=/studio` to land somewhere specific) |
+| `GET` | `/callback` | OAuth return; redirects to the frontend with `#token=` |
+| `GET` | `/api/me` | Profile plus capabilities (GPU online, Claude configured, limits) |
+| `GET` | `/api/me/taste` | Taste profile with weighted genres and top artists |
+| `POST` | `/api/me/taste/refresh` | Rebuild the profile from Spotify now |
+| `GET` | `/api/me/insights` | Claude's Sound DNA narrative |
+| `GET` | `/api/me/top-artists`, `/api/me/top-tracks` | Spotify data by time range |
+| `GET` | `/api/me/stats` | Library totals by mode and engine |
+| `GET` | `/api/generate/presets` | Preset catalog and mode list |
+| `POST` | `/api/generate/preview` | Compose a brief without submitting it |
+| `POST` | `/api/generate` | Compose (or use `edits`) and submit `variations` tasks; returns a batch |
+| `GET` | `/api/generate/batch/:id` | Poll every take in a batch |
+| `GET` | `/api/generate/status/:id` | Poll one generation |
+| `GET` | `/api/generate/history` | Library with `q`, `mode`, `favorites`, `status`, `sort`, paging |
+| `PATCH` / `DELETE` | `/api/generate/:id` | Rename, favorite, delete |
+| `POST` | `/api/generate/:id/favorite`, `/played` | Toggle favorite, count a play |
+| `POST` | `/api/compose/lyrics` | Claude writes lyrics for a theme |
+| `GET` | `/api/audio/:id?t=` | Stream audio; add `&download=1` for an attachment |
+| `POST` | `/api/scan` | OCR a poster image and score the acts |
+
+The generate body:
+
+```json
+{
+  "mode": "mood",
+  "preset": "late_night_drive",
+  "overrides": { "energy": 0.4, "valence": 0.3 },
+  "vocals": true,
+  "duration": 90,
+  "variations": 2,
+  "edits": { "title": "Harbor Lights", "bpm": 96 }
+}
 ```
 
-### Environment Variables
-
-```env
-# Spotify OAuth (required)
-SPOTIFY_CLIENT_ID=your_client_id
-SPOTIFY_CLIENT_SECRET=your_client_secret
-SPOTIFY_REDIRECT_URI=http://127.0.0.1:8888/callback
-SPOTIFY_SCOPE=user-top-read
-
-# Database
-DATABASE_URL=sqlite:///spotty.db
-
-# Frontend URL (for CORS + OAuth redirect)
-FRONTEND_URL=http://localhost:5180
-
-# ACE-Step API
-ACESTEP_API_URL=http://127.0.0.1:8001
-```
-
-### Spotify Developer Setup
-
-1. Go to [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard)
-2. Create a new app
-3. Add `http://127.0.0.1:8888/callback` as a Redirect URI
-4. Copy Client ID and Client Secret to your `.env`
-5. Under **User Management**, add your Spotify account email (required while in Development Mode)
+Fusion takes `artist_ids`, festival takes `artist_names`, lyric mode takes `lyrics` or `lyrics_theme`, brief mode takes `brief`.
 
 ## Deployment
 
-The app can be deployed with the backend on Render and frontend on Vercel:
+The `Dockerfile` builds the backend with Tesseract and libsndfile and runs gunicorn with one worker and eight threads, which keeps the in-memory rate limiter and the completion worker consistent. `backend/render.yaml` wires it up on Render with a persistent disk for audio. Deploy `frontend/` to Vercel or Netlify with `VITE_API_BASE` set. Expose your local ACE-Step to the hosted backend with a Cloudflare Tunnel and point `ACESTEP_API_URL` at it.
 
-- **Render:** Docker-based deployment from the `Dockerfile`. Set env vars for Spotify credentials, database URL, and frontend URL.
-- **Vercel:** Deploy the `frontend/` directory. Set `VITE_API_BASE` to your Render backend URL.
-- **GPU Bridge:** Use [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/) to expose your local ACE-Step server to the deployed backend.
-
-## Project Structure
-
-```
-spotty/
-├── backend/
-│   ├── app.py                  # Flask app factory
-│   ├── config.py               # Settings from env vars
-│   ├── db.py                   # SQLAlchemy setup
-│   ├── models.py               # ORM models
-│   ├── requirements.txt
-│   ├── routes/
-│   │   ├── auth.py             # Spotify OAuth
-│   │   ├── spotify.py          # Spotify data endpoints
-│   │   ├── generate.py         # Music generation endpoints
-│   │   └── scan.py             # Poster OCR endpoints
-│   └── services/
-│       ├── spotify_client.py   # Spotify API client
-│       ├── artist_genre_map.py # Last.fm genre lookup
-│       ├── genre_analyzer.py   # Genre → audio features
-│       ├── taste.py            # Taste profile builder
-│       ├── caption_engine.py   # Taste → ACE-Step prompt
-│       ├── acestep_client.py   # ACE-Step API client
-│       ├── audio_analyzer.py   # Librosa audio analysis
-│       └── ocr.py              # Tesseract OCR
-├── frontend/
-│   ├── src/
-│   │   ├── App.tsx             # Router + layout
-│   │   ├── pages/              # Dashboard, Generate, Library, Scan
-│   │   ├── components/         # TasteRadar, AudioPlayer, GenerateButton
-│   │   ├── hooks/              # useGeneration
-│   │   └── config.ts           # API base URL
-│   ├── package.json
-│   └── vite.config.ts
-├── Dockerfile
-├── .env.example
-└── README.md
-```
+For Postgres, set `DATABASE_URL`; new columns are added automatically on boot by the forward-only migration in `db.py`.
 
 ## License
 
