@@ -1,9 +1,8 @@
 import React from "react";
-import { Download, Pause, Play, SkipBack, SkipForward, Volume2, VolumeX } from "lucide-react";
 import { usePlayer } from "../hooks/usePlayer";
 import { api } from "../lib/api";
 import { fmtTime } from "../lib/format";
-import { EngineBadge, ModeBadge, modeOf } from "./ui";
+import { engineLabel, modeLabel } from "./ui";
 import Waveform from "./Waveform";
 
 export default function PlayerBar() {
@@ -14,43 +13,28 @@ export default function PlayerBar() {
   const idx = p.queue.findIndex((q) => q.generation_id === t.generation_id);
 
   return (
-    <div className="player">
-      <div className="container player-inner">
-        <div style={{ minWidth: 0 }}>
-          <div className="player-title truncate">{t.title || "Untitled"}</div>
-          <div className="player-sub row" style={{ gap: 6 }}>
-            <ModeBadge mode={modeOf(t)} />
-            <EngineBadge engine={t.engine} compact />
-            {p.queue.length > 1 && <span>{idx + 1} / {p.queue.length}</span>}
+    <div className="player" role="region" aria-label="player">
+      <div style={{ minWidth: 0 }}>
+        <div className="b break">{t.title || "untitled"}</div>
+        <div className="small">{modeLabel(t)} · {engineLabel(t.engine)}{p.queue.length > 1 ? ` · ${idx + 1}/${p.queue.length}` : ""}</div>
+      </div>
+      <div className="stack" style={{ gap: 4 }}>
+        <div className="row" style={{ gap: 0 }}>
+          <div className="actions">
+            <button onClick={p.prev} disabled={idx <= 0}>prev</button>
+            <button className="primary" onClick={p.toggle}>{p.playing ? "pause" : "play"}</button>
+            <button onClick={p.next} disabled={idx < 0 || idx >= p.queue.length - 1}>next</button>
           </div>
+          <span className="time" style={{ marginLeft: 12 }}>{fmtTime(p.time)} / {fmtTime(p.duration || t.duration_seconds)}</span>
         </div>
-
-        <div className="player-center">
-          <div className="player-controls">
-            <button className="btn btn-icon btn-ghost" onClick={p.prev} disabled={idx <= 0} aria-label="Previous"><SkipBack size={18} /></button>
-            <button className="btn btn-round btn-primary" onClick={p.toggle} aria-label={p.playing ? "Pause" : "Play"}>
-              {p.playing ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" style={{ marginLeft: 2 }} />}
-            </button>
-            <button className="btn btn-icon btn-ghost" onClick={p.next} disabled={idx < 0 || idx >= p.queue.length - 1} aria-label="Next"><SkipForward size={18} /></button>
-          </div>
-          <div className="player-scrub">
-            <span style={{ textAlign: "right" }}>{fmtTime(p.time)}</span>
-            <div style={{ height: 26 }}>
-              <Waveform peaks={t.waveform} progress={progress} onSeek={(f) => p.seek(f * (p.duration || t.duration_seconds || 0))} bars={72} />
-            </div>
-            <span>{fmtTime(p.duration || t.duration_seconds)}</span>
-          </div>
-        </div>
-
-        <div className="player-right">
-          {t.download_url && (
-            <a className="btn btn-icon btn-ghost" href={api.url(t.download_url)} download aria-label="Download" title="Download MP3"><Download size={16} /></a>
-          )}
-          <button className="btn btn-icon btn-ghost" onClick={() => p.setVolume(p.volume === 0 ? 0.9 : 0)} aria-label="Mute">
-            {p.volume === 0 ? <VolumeX size={16} /> : <Volume2 size={16} />}
-          </button>
-          <input className="range volume" type="range" min={0} max={100} value={Math.round(p.volume * 100)} onChange={(e) => p.setVolume(Number(e.target.value) / 100)} style={{ ["--p" as any]: `${p.volume * 100}%` }} aria-label="Volume" />
-        </div>
+        <Waveform peaks={t.waveform} progress={progress} onSeek={(f) => p.seek(f * (p.duration || t.duration_seconds || 0))} bars={72} />
+      </div>
+      <div className="row vol">
+        {t.download_url && <a href={api.url(t.download_url)} download>download</a>}
+        <label className="small" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          vol
+          <input type="range" min={0} max={100} value={Math.round(p.volume * 100)} onChange={(e) => p.setVolume(Number(e.target.value) / 100)} aria-label="volume" />
+        </label>
       </div>
     </div>
   );

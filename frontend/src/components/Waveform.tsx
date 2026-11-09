@@ -5,15 +5,14 @@ type Props = {
   progress?: number; // 0..1
   onSeek?: (fraction: number) => void;
   bars?: number;
-  variant?: "accent" | "violet" | "static";
   className?: string;
 };
 
-const FALLBACK = Array.from({ length: 48 }, (_, i) => 0.25 + 0.5 * Math.abs(Math.sin(i * 0.7)) * (0.6 + 0.4 * Math.abs(Math.cos(i * 0.31))));
+const FLAT = Array.from({ length: 48 }, () => 0.5);
 
-export default function Waveform({ peaks, progress = 0, onSeek, bars = 48, variant = "accent", className }: Props) {
+export default function Waveform({ peaks, progress = 0, onSeek, bars = 48, className }: Props) {
   const data = useMemo(() => {
-    const src = peaks && peaks.length ? peaks : FALLBACK;
+    const src = peaks && peaks.length ? peaks : FLAT;
     if (src.length === bars) return src;
     const out: number[] = [];
     for (let i = 0; i < bars; i++) {
@@ -33,9 +32,9 @@ export default function Waveform({ peaks, progress = 0, onSeek, bars = 48, varia
   };
 
   return (
-    <div className={`wave ${variant === "accent" ? "" : variant} ${className || ""}`} onClick={handle} role={onSeek ? "slider" : undefined} aria-valuenow={Math.round(progress * 100)}>
+    <div className={`wave ${className || ""}`} onClick={handle} role={onSeek ? "slider" : undefined} aria-label={onSeek ? "seek" : undefined} aria-valuenow={Math.round(progress * 100)}>
       {data.map((v, i) => (
-        <span key={i} className={i / data.length < progress ? "played" : ""} style={{ height: `${Math.max(8, v * 100)}%` }} />
+        <span key={i} className={i / data.length < progress ? "played" : ""} style={{ height: `${Math.max(6, v * 100)}%` }} />
       ))}
     </div>
   );

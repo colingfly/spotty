@@ -1,5 +1,4 @@
 import React, { createContext, useCallback, useContext, useMemo, useRef, useState } from "react";
-import { AlertCircle, CheckCircle2, Info, X } from "lucide-react";
 
 type ToastKind = "success" | "error" | "info";
 type Toast = { id: number; kind: ToastKind; text: string };
@@ -23,18 +22,13 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     (text: string, kind: ToastKind = "success") => {
       const id = idRef.current++;
       setItems((xs) => [...xs.slice(-3), { id, kind, text }]);
-      window.setTimeout(() => dismiss(id), kind === "error" ? 6500 : 3800);
+      window.setTimeout(() => dismiss(id), kind === "error" ? 7000 : 4000);
     },
     [dismiss]
   );
 
   const api = useMemo<ToastApi>(
-    () => ({
-      toast,
-      success: (t) => toast(t, "success"),
-      error: (t) => toast(t, "error"),
-      info: (t) => toast(t, "info"),
-    }),
+    () => ({ toast, success: (t) => toast(t, "success"), error: (t) => toast(t, "error"), info: (t) => toast(t, "info") }),
     [toast]
   );
 
@@ -44,11 +38,8 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
       <div className="toasts" aria-live="polite">
         {items.map((t) => (
           <div key={t.id} className={`toast ${t.kind}`} role="status">
-            {t.kind === "error" ? <AlertCircle size={16} /> : t.kind === "info" ? <Info size={16} /> : <CheckCircle2 size={16} />}
-            <span>{t.text}</span>
-            <button onClick={() => dismiss(t.id)} aria-label="Dismiss">
-              <X size={14} />
-            </button>
+            <span style={{ flex: 1 }}>{t.kind === "error" ? "error: " : ""}{t.text}</span>
+            <button className="link" onClick={() => dismiss(t.id)} aria-label="dismiss">close</button>
           </div>
         ))}
       </div>

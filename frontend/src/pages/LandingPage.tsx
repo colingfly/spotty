@@ -1,47 +1,52 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
+import { API_BASE } from "../config";
 import { useAuth } from "../hooks/useAuth";
+import { api } from "../lib/api";
 
 const ERRORS: Record<string, string> = {
   access_denied: "spotify sign-in was cancelled.",
   invalid_state: "that sign-in link expired. try again.",
-  token_exchange_failed: "spotify rejected the sign-in. check the app's redirect uri matches the backend.",
-  profile_failed: "signed in, but spotify wouldn't return your profile. try again.",
-  session_expired: "your session expired. sign in again.",
-  backend_outdated: "the backend is still updating. give it a minute and try again.",
+  token_exchange_failed: "spotify rejected the sign-in. the app's redirect uri must match the backend.",
+  profile_failed: "signed in, but spotify did not return a profile. try again.",
+  session_expired: "session expired. sign in again.",
+  backend_outdated: "the backend is still running the old version. try again in a few minutes.",
 };
-
-const RIBBON = ["your rotation", "your song", "your city", "your shows"];
 
 export default function LandingPage() {
   const { login, authError } = useAuth();
+  const [api_status, setApiStatus] = useState<string>("checking");
+
+  useEffect(() => {
+    api.get<{ ok: boolean }>("/api/health/live").then((r) => setApiStatus(r.ok ? "online" : "error")).catch(() => setApiStatus("offline"));
+  }, []);
 
   return (
     <div className="landing">
-      <header className="landing-nav container">
-        <span className="wordmark">trill</span>
-        <button className="mono tiny link-btn" onClick={() => login("/dashboard")}>connect spotify</button>
+      <header className="topbar">
+        <span className="brand">trill</span>
+        <div className="meta">
+          <span>api: {api_status}</span>
+          <button onClick={() => login("/dashboard")}>connect spotify</button>
+        </div>
       </header>
 
-      <section className="landing-hero container">
-        <div className="hero-glow" />
-        <div className="mono tiny dim eyebrow-mono">ai music from what you actually play</div>
-        <h1 className="wordmark wordmark-hero">trill</h1>
-        <p className="landing-lede">a song made out of your rotation.</p>
-        <div className="row row-wrap" style={{ gap: 10, marginTop: 26 }}>
-          <button className="btn btn-cream" onClick={() => login("/dashboard")}>connect spotify</button>
+      <main>
+        <p className="label">ai music from what you actually play</p>
+        <h1 className="display" style={{ textTransform: "none", letterSpacing: 0, margin: "8px 0 16px" }}>trill</h1>
+        <p style={{ maxWidth: 560 }}>
+          trill reads your spotify top artists, builds an eight-axis taste profile, and renders an original track with ace-step 1.5. requires a spotify account.
+        </p>
+        <div style={{ marginTop: 20 }}>
+          <button className="primary" onClick={() => login("/dashboard")}>connect spotify</button>
         </div>
-        {authError && <div className="alert alert-error" style={{ marginTop: 20, maxWidth: 520 }}>{ERRORS[authError] || `sign-in failed (${authError}).`}</div>}
-      </section>
+        {authError && <p className="notice" style={{ maxWidth: 560 }}>{ERRORS[authError] || `sign-in failed (${authError}).`}</p>}
+      </main>
 
-      <div className="ribbon" aria-hidden>
-        <div className="ribbon-track">
-          {Array.from({ length: 4 }).flatMap((_, k) => RIBBON.map((t, i) => <span key={`${k}-${i}`} className="wordmark ribbon-item">{t} ·</span>))}
-        </div>
-      </div>
-
-      <footer className="landing-foot container mono tiny dim">
+      <footer>
         <span>© {new Date().getFullYear()} trill</span>
         <span>not affiliated with spotify</span>
+        <span>api: {API_BASE.replace(/^https?:\/\//, "")}</span>
+        <span>v2.0.0</span>
       </footer>
     </div>
   );

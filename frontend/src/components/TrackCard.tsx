@@ -1,10 +1,9 @@
 import React, { useState } from "react";
-import { Check, Download, Heart, Loader2, Pause, Pencil, Play, Trash2, X } from "lucide-react";
 import { usePlayer } from "../hooks/usePlayer";
 import { api } from "../lib/api";
 import { fmtTime, relativeTime } from "../lib/format";
 import type { Generation } from "../types";
-import { EngineBadge, Eq, ModeBadge, PlaceholderArt, StatusBadge, modeOf } from "./ui";
+import { Lyrics, engineLabel, modeLabel } from "./ui";
 import Waveform from "./Waveform";
 
 type Props = {
@@ -13,11 +12,10 @@ type Props = {
   onChange?: (g: Generation) => void;
   onDelete?: (g: Generation) => void;
   onToggleFavorite?: (g: Generation) => void;
-  showCaption?: boolean;
   compact?: boolean;
 };
 
-export default function TrackCard({ gen, queue, onChange, onDelete, onToggleFavorite, showCaption = true, compact = false }: Props) {
+export default function TrackCard({ gen, queue, onChange, onDelete, onToggleFavorite, compact = false }: Props) {
   const player = usePlayer();
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(gen.title || "");
@@ -26,8 +24,7 @@ export default function TrackCard({ gen, queue, onChange, onDelete, onToggleFavo
   const isCurrent = player.isCurrent(gen.generation_id);
   const playing = isCurrent && player.playing;
   const ready = gen.status === "completed" && !!gen.audio_url;
-  const active = gen.status === "pending" || gen.status === "processing";
-  const mode = modeOf(gen);
+  const bpm = (gen.params as any)?.bpm as number | undefined;
 
   const saveTitle = async () => {
     setSaving(true);
@@ -42,87 +39,57 @@ export default function TrackCard({ gen, queue, onChange, onDelete, onToggleFavo
   };
 
   const progress = isCurrent && player.duration ? player.time / player.duration : 0;
+  const meta = [
+    modeLabel(gen),
+    engineLabel(gen.engine),
+    gen.status !== "completed" ? gen.status : null,
+    gen.duration_seconds ? fmtTime(gen.duration_seconds) : null,
+    bpm ? `${bpm} bpm` : null,
+    gen.meta?.key_scale || null,
+    relativeTime(gen.created_at),
+    gen.play_count > 0 ? `${gen.play_count} play${gen.play_count === 1 ? "" : "s"}` : null,
+    gen.is_favorite ? "favorite" : null,
+  ].filter(Boolean).join(" · ");
 
   return (
-    <div className={`card card-sm card-hover track-card ${isCurrent ? "is-playing" : ""}`}>
-      <div className="track-art">
-        {ready ? (
-          <>
-            <PlaceholderArt size={22} />
-            <button className={`play-overlay ${isCurrent ? "show" : ""}`} onClick={() => player.play(gen, queue)} aria-label={playing ? "Pause" : "Play"}>
-              {playing ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" />}
-            </button>
-          </>
-        ) : active ? (
-          <Loader2 size={20} className="muted" style={{ animation: "spin 1s linear infinite" }} />
-        ) : (
-          <PlaceholderArt size={22} />
-        )}
-      </div>
-
-      <div style={{ minWidth: 0 }}>
-        <div className="row" style={{ gap: 8, alignItems: "flex-start" }}>
-          <div style={{ minWidth: 0, flex: 1 }}>
-            {editing ? (
-              <div className="row" style={{ gap: 6 }}>
-                <input className="inline-edit" value={title} autoFocus maxLength={80} onChange={(e) => setTitle(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") void saveTitle(); if (e.key === "Escape") setEditing(false); }} />
-                <button className="btn btn-icon btn-sm btn-primary" onClick={() => void saveTitle()} disabled={saving} aria-label="Save"><Check size={14} /></button>
-                <button className="btn btn-icon btn-sm btn-ghost" onClick={() => setEditing(false)} aria-label="Cancel"><X size={14} /></button>
-              </div>
-            ) : (
-              <div className="track-title truncate" title={gen.title || undefined}>
-                {playing && <Eq />} {playing && " "}
-                {gen.title || gen.caption?.split(",")[0] || "Untitled"}
-              </div>
-            )}
-            <div className="track-meta">
-              <ModeBadge mode={mode} />
-              <EngineBadge engine={gen.engine} compact />
-              {gen.status !== "completed" && <StatusBadge status={gen.status} />}
-              {gen.duration_seconds ? <span>{fmtTime(gen.duration_seconds)}</span> : null}
-              {gen.params && (gen.params as any).bpm ? <span>{(gen.params as any).bpm} BPM</span> : null}
-              {gen.meta?.key_scale ? <span>{gen.meta.key_scale}</span> : null}
-              <span>{relativeTime(gen.created_at)}</span>
-              {gen.play_count > 0 && <span>{gen.play_count} play{gen.play_count === 1 ? "" : "s"}</span>}
-            </div>
+    <div className={`track ${isCurrent ? "current" : ""}`}>
+      {editing ? (
+        <div className="row">
+          <input value={title} autoFocus maxLength={80} style={{ flex: 1, minWidth: 200 }} onChange={(e) => setTitle(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") void saveTitle(); if (e.key === "Escape") setEditing(false); }} aria-label="title" />
+          <div className="actions">
+            <button className="primary" onClick={() => void saveTitle()} disabled={saving}>save</button>
+            <button onClick={() => setEditing(false)}>cancel</button>
           </div>
         </div>
+      ) : (
+        <div className="b break">{playing ? "playing: " : ""}{gen.title || gen.caption?.split(",")[0] || "untitled"}</div>
+      )}
+      <div className="small">{meta}</div>
+      {gen.status === "failed" && gen.error && <div className="small">error: {gen.error}</div>}
 
-        {gen.status === "failed" && gen.error && <div className="tiny" style={{ color: "var(--rose)", marginTop: 6 }}>{gen.error}</div>}
+      {ready && (
+        <Waveform peaks={gen.waveform} progress={progress} onSeek={(f) => { if (!isCurrent) player.play(gen, queue); if (player.duration) player.seek(f * player.duration); }} />
+      )}
 
-        {showCaption && gen.caption && !compact && <div className="track-caption">{gen.caption}</div>}
-
-        {ready && (
-          <div className="track-wave">
-            <Waveform peaks={gen.waveform} progress={progress} onSeek={(f) => { if (!isCurrent) player.play(gen, queue); if (player.duration) player.seek(f * player.duration); }} variant={isCurrent ? "accent" : "static"} />
+      {!compact && (
+        <>
+          <div className="actions" style={{ marginTop: 6 }}>
+            {ready && <button onClick={() => player.play(gen, queue)}>{playing ? "pause" : "play"}</button>}
+            {onToggleFavorite && <button aria-pressed={gen.is_favorite} onClick={() => onToggleFavorite(gen)}>{gen.is_favorite ? "unfavorite" : "favorite"}</button>}
+            {onChange && !editing && <button onClick={() => { setTitle(gen.title || ""); setEditing(true); }}>rename</button>}
+            {gen.download_url && <a className="btn" href={api.url(gen.download_url)} download>download mp3</a>}
+            {onDelete && <button onClick={() => onDelete(gen)}>delete</button>}
           </div>
-        )}
-
-        {!compact && (
-          <div className="track-actions">
-            {ready && (
-              <button className="btn btn-sm btn-secondary" onClick={() => player.play(gen, queue)}>
-                {playing ? <Pause size={14} /> : <Play size={14} />} {playing ? "Pause" : "Play"}
-              </button>
-            )}
-            {onToggleFavorite && (
-              <button className="btn btn-icon btn-sm btn-ghost" onClick={() => onToggleFavorite(gen)} aria-label="Favorite" title="Favorite" style={{ color: gen.is_favorite ? "var(--accent)" : undefined }}>
-                <Heart size={15} fill={gen.is_favorite ? "currentColor" : "none"} />
-              </button>
-            )}
-            {onChange && !editing && (
-              <button className="btn btn-icon btn-sm btn-ghost" onClick={() => { setTitle(gen.title || ""); setEditing(true); }} aria-label="Rename" title="Rename"><Pencil size={15} /></button>
-            )}
-            {gen.download_url && (
-              <a className="btn btn-icon btn-sm btn-ghost" href={api.url(gen.download_url)} download aria-label="Download" title="Download MP3"><Download size={15} /></a>
-            )}
-            <span className="spacer" />
-            {onDelete && (
-              <button className="btn btn-icon btn-sm btn-ghost" onClick={() => onDelete(gen)} aria-label="Delete" title="Delete" style={{ color: "var(--text-3)" }}><Trash2 size={15} /></button>
-            )}
-          </div>
-        )}
-      </div>
+          {(gen.caption || (gen.lyrics && gen.lyrics !== "[Instrumental]")) && (
+            <details style={{ marginTop: 8 }}>
+              <summary>brief</summary>
+              {gen.caption && <div className="break"><span className="label">caption</span><br />{gen.caption}</div>}
+              {gen.lyrics && gen.lyrics !== "[Instrumental]" && <div><span className="label">lyrics</span><Lyrics text={gen.lyrics} /></div>}
+              {gen.meta?.rationale && <div className="small">{gen.meta.rationale}</div>}
+            </details>
+          )}
+        </>
+      )}
     </div>
   );
 }
