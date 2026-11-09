@@ -1,38 +1,35 @@
-# Core web framework
+# Web framework
 Flask==3.0.3
 Flask-Cors==4.0.1
+flask-limiter==3.5.0
+itsdangerous>=2.2.0
+gunicorn==21.2.0
 
-# Env var management
+# Config
 python-dotenv==1.0.1
 
-# Database ORM
+# Database
 SQLAlchemy==2.0.35
+psycopg[binary]==3.2.10
 
-# MySQL driver (pymysql works well with SQLAlchemy)
-pymysql==1.1.1
-
-# Requests for HTTP calls (Spotify API)
+# HTTP
 requests==2.32.3
 
-# Optional: for token refresh + security
-cryptography==43.0.1
+# Claude composer (optional at runtime; leave ANTHROPIC_API_KEY unset to skip)
+anthropic>=0.84.0
+pydantic>=2.6
 
-# OCR + CV + fuzzy
+# OCR + CV + fuzzy matching (poster scanner)
 pillow==10.4.0
 pytesseract==0.3.13
 opencv-python-headless==4.10.0.84
 rapidfuzz==3.9.6
-numpy==1.26.4
-psycopg[binary]==3.2.10
+numpy>=1.26,<3
 
-gunicorn==21.2.0
-
-# Audio analysis (replaces deprecated Spotify audio-features API)
-librosa==0.10.2
+# Audio metadata + waveform
+mutagen==1.47.0
 soundfile==0.12.1
+librosa>=0.10.2
 
-# Rate limiting
-flask-limiter==3.5.0
-
-
-
+# Tests
+pytest>=8.0

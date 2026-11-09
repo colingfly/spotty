@@ -2,32 +2,44 @@
 from __future__ import annotations
 
 import base64
+import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 from sqlalchemy.orm import Session
+from urllib3.util.retry import Retry
 
 from config import settings
 from models import SpotifyAccount
 
+log = logging.getLogger("spotty.spotify")
+
 AUTH_URL = "https://accounts.spotify.com/authorize"
 TOKEN_URL = "https://accounts.spotify.com/api/token"
 API_BASE = "https://api.spotify.com/v1"
+
+TIME_RANGES = ("short_term", "medium_term", "long_term")
+
+
+class SpotifyError(RuntimeError):
+    def __init__(self, status: int, body: str = ""):
+        super().__init__(f"Spotify API {status}: {body[:200]}")
+        self.status = status
+        self.body = body
 
 
 def spotify_session() -> requests.Session:
     s = requests.Session()
     retry = Retry(
         total=3,
-        backoff_factor=0.3,
+        backoff_factor=0.4,
         status_forcelist=(429, 500, 502, 503, 504),
         allowed_methods=("GET", "POST"),
+        respect_retry_after_header=True,
     )
     s.mount("https://", HTTPAdapter(max_retries=retry))
-    s.timeout = 15
     return s
 
 
@@ -36,29 +48,38 @@ def basic_auth_header() -> Dict[str, str]:
     return {"Authorization": "Basic " + base64.b64encode(raw).decode()}
 
 
+def _bearer(acct: SpotifyAccount) -> Dict[str, str]:
+    return {"Authorization": f"Bearer {acct.access_token}"}
+
+
+def _get(acct: SpotifyAccount, path: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    r = spotify_session().get(f"{API_BASE}{path}", headers=_bearer(acct), params=params or {}, timeout=15)
+    if r.status_code != 200:
+        raise SpotifyError(r.status_code, r.text)
+    return r.json() or {}
+
+
+# --- tokens ---------------------------------------------------------------
+
 def refresh_if_needed(acct: SpotifyAccount, db: Session) -> SpotifyAccount:
-    if time.time() < (acct.expires_at - 30):
+    if time.time() < (acct.expires_at - 60):
         return acct
     if not acct.refresh_token:
         raise RuntimeError("Missing refresh token; user must re-auth.")
 
-    sess = spotify_session()
-    r = sess.post(
+    r = spotify_session().post(
         TOKEN_URL,
         headers=basic_auth_header(),
-        data={
-            "grant_type": "refresh_token",
-            "refresh_token": acct.refresh_token,
-            "redirect_uri": settings.spotify_redirect_uri,
-        },
+        data={"grant_type": "refresh_token", "refresh_token": acct.refresh_token},
+        timeout=15,
     )
     if r.status_code != 200:
-        raise RuntimeError(f"Refresh failed: {r.status_code} {r.text}")
+        raise RuntimeError(f"Refresh failed: {r.status_code} {r.text[:200]}")
 
     payload = r.json()
     acct.access_token = payload["access_token"]
     acct.expires_at = int(time.time()) + int(payload.get("expires_in", 3600))
-    if "refresh_token" in payload:
+    if payload.get("refresh_token"):
         acct.refresh_token = payload["refresh_token"]
     acct.scope = payload.get("scope", acct.scope)
     acct.token_type = payload.get("token_type", acct.token_type)
@@ -68,145 +89,157 @@ def refresh_if_needed(acct: SpotifyAccount, db: Session) -> SpotifyAccount:
     return acct
 
 
-def search_artist(name: str, bearer: str) -> Optional[Dict[str, Any]]:
-    sess = spotify_session()
-    r = sess.get(
-        f"{API_BASE}/search",
-        headers={"Authorization": f"Bearer {bearer}"},
-        params={"q": name, "type": "artist", "limit": 3},
-    )
-    if r.status_code != 200:
+# --- profile --------------------------------------------------------------
+
+def fetch_me(acct: SpotifyAccount) -> Dict[str, Any]:
+    me = _get(acct, "/me")
+    images = me.get("images") or []
+    return {
+        "id": me.get("id"),
+        "display_name": me.get("display_name") or me.get("id"),
+        "avatar_url": (images[0].get("url") if images else None),
+        "country": me.get("country"),
+        "product": me.get("product"),
+        "external_url": (me.get("external_urls") or {}).get("spotify"),
+    }
+
+
+# --- library --------------------------------------------------------------
+
+def _shape_artist(a: Dict[str, Any]) -> Dict[str, Any]:
+    images = a.get("images") or []
+    return {
+        "id": a.get("id"),
+        "name": a.get("name"),
+        "genres": [g.lower() for g in a.get("genres", [])],
+        "popularity": a.get("popularity"),
+        "image": images[0].get("url") if images else None,
+        "external_url": (a.get("external_urls") or {}).get("spotify"),
+        "followers": (a.get("followers") or {}).get("total"),
+    }
+
+
+def _shape_track(t: Dict[str, Any]) -> Dict[str, Any]:
+    album = t.get("album") or {}
+    images = album.get("images") or []
+    return {
+        "id": t.get("id"),
+        "name": t.get("name"),
+        "artists": [a.get("name") for a in t.get("artists", []) if a.get("name")],
+        "album": album.get("name"),
+        "image": images[0].get("url") if images else None,
+        "external_url": (t.get("external_urls") or {}).get("spotify"),
+        "popularity": t.get("popularity"),
+        "duration_ms": t.get("duration_ms"),
+        "explicit": t.get("explicit"),
+    }
+
+
+def user_top_artists_raw(acct: SpotifyAccount, time_range: str = "long_term", limit: int = 50) -> List[Dict[str, Any]]:
+    try:
+        return _get(acct, "/me/top/artists", {"time_range": time_range, "limit": limit}).get("items", [])
+    except SpotifyError as e:
+        log.warning("top artists failed: %s", e)
+        return []
+
+
+def user_top_artists(acct: SpotifyAccount, time_range: str = "long_term", limit: int = 50) -> List[Dict[str, Any]]:
+    return [_shape_artist(a) for a in user_top_artists_raw(acct, time_range, limit)]
+
+
+def user_top_tracks(acct: SpotifyAccount, time_range: str = "medium_term", limit: int = 20) -> List[Dict[str, Any]]:
+    try:
+        items = _get(acct, "/me/top/tracks", {"time_range": time_range, "limit": limit}).get("items", [])
+    except SpotifyError as e:
+        log.warning("top tracks failed: %s", e)
+        return []
+    return [_shape_track(t) for t in items]
+
+
+def search_artist(name: str, acct: SpotifyAccount) -> Optional[Dict[str, Any]]:
+    try:
+        items = (_get(acct, "/search", {"q": name, "type": "artist", "limit": 3}).get("artists") or {}).get("items") or []
+    except SpotifyError:
         return None
-    items = (r.json().get("artists") or {}).get("items") or []
     return items[0] if items else None
 
 
-def user_top_artists(
-    acct: SpotifyAccount, time_range: str = "long_term", limit: int = 50
-) -> List[Dict[str, Any]]:
-    sess = spotify_session()
-    r = sess.get(
-        f"{API_BASE}/me/top/artists",
-        headers={"Authorization": f"Bearer {acct.access_token}"},
-        params={"time_range": time_range, "limit": limit},
-    )
-    if r.status_code != 200:
+def get_artists(acct: SpotifyAccount, ids: List[str]) -> List[Dict[str, Any]]:
+    ids = [i for i in ids if i][:50]
+    if not ids:
         return []
-    return r.json().get("items", [])
-
-
-def user_top_genres(acct: SpotifyAccount) -> List[str]:
-    from services.artist_genre_map import get_artist_genres
-
-    artists = user_top_artists(acct, time_range="long_term", limit=50)
-    seen: set = set()
-    out: List[str] = []
-    for a in artists:
-        genres = a.get("genres", [])
-        if not genres:
-            genres = get_artist_genres(a.get("name", ""))
-        for g in genres:
-            gl = g.lower()
-            if gl not in seen:
-                seen.add(gl)
-                out.append(gl)
-    return out
-
-
-def user_audio_features_profile(acct: SpotifyAccount) -> Dict[str, float]:
-    """
-    Compute audio features for a user's taste profile.
-
-    Strategy:
-    1. Try librosa analysis on preview clips (most accurate)
-    2. Fall back to genre-based inference (always available)
-    """
-    import logging
-    from services.audio_analyzer import analyze_tracks
-    from services.genre_analyzer import infer_audio_features
-
-    log = logging.getLogger("spotty")
-    sess = spotify_session()
-
-    # Get top tracks
-    r1 = sess.get(
-        f"{API_BASE}/me/top/tracks",
-        headers={"Authorization": f"Bearer {acct.access_token}"},
-        params={"time_range": "medium_term", "limit": 50, "market": "US"},
-    )
-    tracks = r1.json().get("items", []) if r1.status_code == 200 else []
-
-    # Try preview URL analysis first
-    preview_urls = [t["preview_url"] for t in tracks if t.get("preview_url")]
-    log.info(f"Found {len(preview_urls)}/{len(tracks)} tracks with preview URLs")
-
-    if preview_urls:
-        return analyze_tracks(preview_urls)
-
-    # Fallback: genre-based inference from top artists
-    log.info("No preview URLs — using genre-based inference")
-    from services.artist_genre_map import get_artist_genres
-
-    artists = user_top_artists(acct, "long_term", limit=50)
-    all_genres: List[str] = []
-    weights: List[float] = []
-    for i, a in enumerate(artists):
-        # Try Spotify genres first, then our own mapper
-        genres = a.get("genres", [])
-        if not genres:
-            genres = get_artist_genres(a.get("name", ""))
-        for g in genres:
-            all_genres.append(g)
-            weights.append(1.0 / (1.0 + 0.2 * i))
-
-    log.info(f"Collected {len(all_genres)} genre tags from {len(artists)} artists")
-    return infer_audio_features(all_genres, weights)
-
-
-def artist_audio_features(acct: SpotifyAccount, artist_id: str) -> Dict[str, float]:
-    """Get audio features for an artist (preview clips or genre fallback)."""
-    from services.audio_analyzer import analyze_tracks
-    from services.genre_analyzer import infer_audio_features
-
-    sess = spotify_session()
-    r = sess.get(
-        f"{API_BASE}/artists/{artist_id}/top-tracks",
-        headers={"Authorization": f"Bearer {acct.access_token}"},
-        params={"market": "US"},
-    )
-    keys = [
-        "danceability", "energy", "valence",
-        "acousticness", "instrumentalness", "liveness",
-        "speechiness", "tempo",
-    ]
-    if r.status_code != 200:
-        return {k: 0.0 for k in keys}
-
-    tracks = r.json().get("tracks", [])
-    preview_urls = [t["preview_url"] for t in tracks if t.get("preview_url")]
-    if preview_urls:
-        return analyze_tracks(preview_urls)
-
-    # Fallback: genre-based
-    genres = artist_genres(acct, artist_id)
-    if genres:
-        return infer_audio_features(genres)
-    return {k: 0.0 for k in keys}
-
-
-def artist_genres(acct: SpotifyAccount, artist_id: str) -> List[str]:
-    """Get genres for a specific artist."""
-    from services.artist_genre_map import get_artist_genres
-
-    sess = spotify_session()
-    r = sess.get(
-        f"{API_BASE}/artists/{artist_id}",
-        headers={"Authorization": f"Bearer {acct.access_token}"},
-    )
-    if r.status_code != 200:
+    try:
+        return [_shape_artist(a) for a in _get(acct, "/artists", {"ids": ",".join(ids)}).get("artists", []) if a]
+    except SpotifyError as e:
+        log.warning("get artists failed: %s", e)
         return []
-    data = r.json()
-    genres = [g.lower() for g in data.get("genres", [])]
-    if not genres:
-        genres = get_artist_genres(data.get("name", ""))
+
+
+def artist_genres_with_fallback(artist: Dict[str, Any]) -> List[str]:
+    """Spotify stopped returning genres for most artists in 2024; use Last.fm when empty."""
+    from services.artist_genre_map import get_artist_genres
+
+    genres = [g.lower() for g in artist.get("genres") or []]
+    if not genres and artist.get("name"):
+        genres = get_artist_genres(artist["name"])
     return genres
+
+
+# --- taste inputs ---------------------------------------------------------
+
+def collect_taste_inputs(acct: SpotifyAccount) -> Tuple[List[Dict[str, Any]], List[str], List[Dict[str, Any]]]:
+    """
+    Returns (weighted_genres, top_artist_names, artists_with_genres).
+
+    weighted_genres: [{"genre": str, "weight": float}] sorted by weight.
+    Weighting combines artist rank (earlier = heavier) and recency (artists
+    appearing in the short-term list get a boost).
+    """
+    long_term = user_top_artists_raw(acct, "long_term", 50)
+    short_term = user_top_artists_raw(acct, "short_term", 30)
+    recent_ids = {a.get("id") for a in short_term}
+
+    weights: Dict[str, float] = {}
+    names: List[str] = []
+    enriched: List[Dict[str, Any]] = []
+    for i, a in enumerate(long_term):
+        rank_w = 1.0 / (1.0 + 0.12 * i)
+        recency = 1.35 if a.get("id") in recent_ids else 1.0
+        genres = artist_genres_with_fallback(a)
+        if a.get("name"):
+            names.append(a["name"])
+        enriched.append({"name": a.get("name"), "genres": genres})
+        for j, g in enumerate(genres):
+            g_w = rank_w * recency / (1.0 + 0.5 * j)
+            weights[g] = weights.get(g, 0.0) + g_w
+
+    # Artists only in the short-term list still count, lightly
+    long_ids = {a.get("id") for a in long_term}
+    for i, a in enumerate(short_term):
+        if a.get("id") in long_ids:
+            continue
+        genres = artist_genres_with_fallback(a)
+        if a.get("name"):
+            names.append(a["name"])
+        enriched.append({"name": a.get("name"), "genres": genres})
+        for j, g in enumerate(genres):
+            weights[g] = weights.get(g, 0.0) + 0.6 / (1.0 + 0.12 * i) / (1.0 + 0.5 * j)
+
+    total = sum(weights.values()) or 1.0
+    weighted = sorted(
+        ({"genre": g, "weight": round(w / total, 4)} for g, w in weights.items()),
+        key=lambda x: x["weight"],
+        reverse=True,
+    )
+    return weighted, names, enriched
+
+
+def user_audio_features_profile(acct: SpotifyAccount, weighted_genres: Optional[List[Dict[str, Any]]] = None) -> Dict[str, float]:
+    """Infer the 8 audio features from weighted genre tags (Spotify audio-features API is gone)."""
+    from services.genre_analyzer import infer_audio_features
+
+    if weighted_genres is None:
+        weighted_genres, _, _ = collect_taste_inputs(acct)
+    genres = [w["genre"] for w in weighted_genres]
+    weights = [float(w["weight"]) for w in weighted_genres]
+    return infer_audio_features(genres, weights)

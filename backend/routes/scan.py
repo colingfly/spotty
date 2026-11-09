@@ -1,46 +1,41 @@
 # backend/routes/scan.py
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any, Dict, List
 
-from flask import Blueprint, request
+from flask import Blueprint, g, request
 from rapidfuzz import fuzz
 from sqlalchemy.orm import Session
 
 from db import SessionLocal
-from models import SpotifyAccount, ArtistEdge, PosterScan
-from services.spotify_client import (
-    refresh_if_needed, search_artist, user_top_artists,
-)
-from services.ocr import ocr_text_from_image, tokenize_candidate_lines, jaccard
+from extensions import limiter
+from models import ArtistEdge, PosterScan, SpotifyAccount
+from services.auth_tokens import require_user
+from services.ocr import jaccard, ocr_text_from_image, tokenize_candidate_lines
+from services.spotify_client import artist_genres_with_fallback, refresh_if_needed, search_artist, user_top_artists
 from services.taste import update_user_taste_if_stale
+
+log = logging.getLogger("spotty.scan")
 
 scan_bp = Blueprint("scan", __name__)
 
 
 def _log_cooccurrence(names: List[str], db: Session) -> None:
-    norm = [n.strip() for n in names if n and n.strip()]
     seen: set = set()
-    uniq = []
-    for n in norm:
-        low = n.lower()
-        if low not in seen:
-            seen.add(low)
+    uniq: List[str] = []
+    for n in names:
+        n = (n or "").strip()
+        if n and n.lower() not in seen:
+            seen.add(n.lower())
             uniq.append(n)
-
-    def keypair(a: str, b: str):
-        return (a, b) if a.lower() <= b.lower() else (b, a)
 
     epoch = int(time.time())
     for i in range(len(uniq)):
         for j in range(i + 1, len(uniq)):
-            a, b = keypair(uniq[i], uniq[j])
-            edge = (
-                db.query(ArtistEdge)
-                .filter(ArtistEdge.a == a, ArtistEdge.b == b)
-                .one_or_none()
-            )
+            a, b = sorted((uniq[i], uniq[j]), key=str.lower)
+            edge = db.query(ArtistEdge).filter(ArtistEdge.a == a, ArtistEdge.b == b).one_or_none()
             if not edge:
                 edge = ArtistEdge(a=a, b=b, weight=1.0, last_seen=epoch)
             else:
@@ -55,39 +50,32 @@ def _cooccur_score(cand_name: str, user_top_names: List[str], db: Session) -> fl
         return 0.0
     total = 0.0
     for t in user_top_names:
-        a, b = (cand_name, t) if cand_name.lower() <= t.lower() else (t, cand_name)
-        edge = (
-            db.query(ArtistEdge)
-            .filter(ArtistEdge.a == a, ArtistEdge.b == b)
-            .one_or_none()
-        )
+        a, b = sorted((cand_name, t), key=str.lower)
+        edge = db.query(ArtistEdge).filter(ArtistEdge.a == a, ArtistEdge.b == b).one_or_none()
         if edge:
             total += edge.weight
     return min(total / 20.0, 1.0)
 
 
 @scan_bp.post("/api/scan")
+@require_user
+@limiter.limit("10 per minute")
 def api_scan():
     f = request.files.get("file")
-    sid = request.form.get("spotify_user_id")
-    if not f or not sid:
-        return {
-            "error": "bad_request",
-            "message": "file and spotify_user_id required",
-        }, 400
-    if f.mimetype.split("/")[0] != "image":
+    if not f:
+        return {"error": "bad_request", "message": "file is required"}, 400
+    if (f.mimetype or "").split("/")[0] != "image":
         return {"error": "unsupported_media_type"}, 415
 
     db = SessionLocal()
     try:
-        acct = db.query(SpotifyAccount).filter_by(spotify_user_id=sid).one_or_none()
+        acct = db.query(SpotifyAccount).filter_by(spotify_user_id=g.sid).one_or_none()
         if not acct:
             return {"error": "not_linked"}, 404
-
         try:
             acct = refresh_if_needed(acct, db)
         except Exception as e:
-            return {"error": "refresh_failed", "detail": str(e)}, 401
+            return {"error": "reauth_required", "message": str(e)}, 401
 
         ut = update_user_taste_if_stale(acct, db, max_age_hours=24)
 
@@ -98,33 +86,38 @@ def api_scan():
         except RuntimeError as ocr:
             return {"error": "ocr_unavailable", "message": str(ocr)}, 503
 
-        candidates = tokenize_candidate_lines(text_blob)
-
-        top_artists_long = user_top_artists(acct, "long_term", limit=20)
-        top_names = [a.get("name") for a in top_artists_long if a.get("name")]
+        candidates = tokenize_candidate_lines(text_blob)[:60]
+        top_names = [a["name"] for a in user_top_artists(acct, "long_term", limit=30) if a.get("name")]
+        top_lower = {n.lower() for n in top_names}
+        user_genres = set(ut.genres or [])
 
         results: List[Dict[str, Any]] = []
+        seen_ids: set = set()
         for cand in candidates:
-            found = search_artist(cand, acct.access_token)
-            if not found:
+            found = search_artist(cand, acct)
+            if not found or found.get("id") in seen_ids:
                 continue
-
             found_name = found["name"]
             name_score = fuzz.token_set_ratio(cand.lower(), found_name.lower()) / 100.0
-            artist_genres = [g.lower() for g in found.get("genres", [])]
-            genre_score = jaccard(artist_genres, ut.genres or [])
+            if name_score < 0.6:
+                continue
+            seen_ids.add(found["id"])
+            genres = artist_genres_with_fallback(found)
+            genre_score = jaccard(genres, user_genres)
             cooc = _cooccur_score(found_name, top_names, db)
-            total = 0.55 * name_score + 0.30 * genre_score + 0.15 * cooc
-
+            in_library = found_name.lower() in top_lower
+            total = 0.5 * name_score + 0.3 * genre_score + 0.1 * cooc + (0.1 if in_library else 0.0)
+            images = found.get("images") or []
             results.append(
                 {
                     "candidate": cand,
                     "resolved_name": found_name,
                     "spotify_artist_id": found["id"],
-                    "image": (found.get("images") or [{}])[0].get("url"),
+                    "image": images[0].get("url") if images else None,
                     "external_url": (found.get("external_urls") or {}).get("spotify"),
-                    "genres": sorted(set(artist_genres))[:6],
+                    "genres": sorted(set(genres))[:6],
                     "popularity": found.get("popularity"),
+                    "in_library": in_library,
                     "scores": {
                         "name": round(name_score * 100, 1),
                         "genre": round(genre_score, 3),
@@ -135,13 +128,7 @@ def api_scan():
             )
 
         try:
-            db.add(
-                PosterScan(
-                    spotify_user_id=sid,
-                    scan_ts=int(time.time()),
-                    artists_csv=",".join([r["resolved_name"] for r in results]),
-                )
-            )
+            db.add(PosterScan(spotify_user_id=g.sid, scan_ts=int(time.time()), artists_csv=",".join(r["resolved_name"] for r in results)))
             _log_cooccurrence([r["resolved_name"] for r in results], db)
         except Exception:
             db.rollback()

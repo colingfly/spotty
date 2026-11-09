@@ -28,3 +28,6 @@ backend/audio_uploads/
 # OS
 .DS_Store
 Thumbs.db
+
+# Dev signing key (auto-generated)
+backend/.secret_key
