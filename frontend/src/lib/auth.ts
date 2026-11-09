@@ -35,7 +35,9 @@ export function consumeAuthFragment(): { token?: string; next?: string; error?: 
   const params = new URLSearchParams(hash);
   const token = params.get("token") ?? undefined;
   const next = params.get("next") ?? undefined;
-  const error = params.get("auth_error") ?? undefined;
+  let error = params.get("auth_error") ?? undefined;
+  // An old backend still redirects with #sid=...; there is no session token in that, so surface it.
+  if (!token && !error && params.get("sid")) error = "backend_outdated";
   if (!token && !error) return null;
   history.replaceState(null, "", window.location.pathname + window.location.search);
   return { token, next, error };
