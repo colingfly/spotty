@@ -18,7 +18,9 @@ const norm = (key: AudioFeatureKey, v: number | undefined) => {
 const denorm = (key: AudioFeatureKey, n: number) => (key === "tempo" ? Math.round(40 + n * 180) : Math.round(n * 100) / 100);
 
 export default function TasteRadar({ features, overrides, size = 280, interactive = false, onChange, compareTo }: Props) {
-  const cx = size / 2;
+  const PAD = 70; // horizontal room for the left and right axis labels
+  const width = size + PAD * 2;
+  const cx = width / 2;
   const cy = size / 2;
   const maxR = size / 2 - 48;
   const n = AUDIO_FEATURES.length;
@@ -34,7 +36,7 @@ export default function TasteRadar({ features, overrides, size = 280, interactiv
   const setFromPointer = (key: AudioFeatureKey, e: React.PointerEvent<SVGSVGElement>) => {
     if (!onChange) return;
     const rect = e.currentTarget.getBoundingClientRect();
-    const sx = ((e.clientX - rect.left) / rect.width) * size;
+    const sx = ((e.clientX - rect.left) / rect.width) * width;
     const sy = ((e.clientY - rect.top) / rect.height) * size;
     const i = AUDIO_FEATURES.indexOf(key);
     const proj = (sx - cx) * Math.cos(angle(i)) + (sy - cy) * Math.sin(angle(i));
@@ -44,9 +46,9 @@ export default function TasteRadar({ features, overrides, size = 280, interactiv
   return (
     <svg
       className="radar"
-      width={size}
+      width={width}
       height={size}
-      viewBox={`0 0 ${size} ${size}`}
+      viewBox={`0 0 ${width} ${size}`}
       style={{ display: "block", maxWidth: "100%", height: "auto", touchAction: "none", userSelect: "none" }}
       onPointerMove={(e) => drag && setFromPointer(drag, e)}
       onPointerUp={() => setDrag(null)}
@@ -74,11 +76,14 @@ export default function TasteRadar({ features, overrides, size = 280, interactiv
         );
       })}
       {AUDIO_FEATURES.map((key, i) => {
-        const p = pt(i, maxR + 28);
+        const c = Math.cos(angle(i));
+        const side = Math.abs(c) > 0.3; // labels left or right of the chart hang off the axis end
+        const p = pt(i, maxR + (side ? 10 : 22));
+        const anchor = !side ? "middle" : c > 0 ? "start" : "end";
         const raw = overrides?.[key] ?? features?.[key];
         const val = raw === undefined || raw === null ? "–" : key === "tempo" ? `${Math.round(raw)}` : `${Math.round(raw * 100)}`;
         return (
-          <text key={key} x={p.x} y={p.y} textAnchor="middle" dominantBaseline="middle">
+          <text key={key} x={p.x} y={p.y} textAnchor={anchor} dominantBaseline="middle">
             {FEATURE_LABELS[key].toLowerCase()} {val}
           </text>
         );

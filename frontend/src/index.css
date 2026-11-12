@@ -49,13 +49,14 @@ code { font: inherit; }
 .between { justify-content: space-between; }
 .stack { display: flex; flex-direction: column; gap: 8px; }
 .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; align-items: start; }
+.cols.split { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); }
+@media (max-width: 900px) { .cols.split { grid-template-columns: minmax(0, 1fr); } }
 .section { margin-top: 24px; }
 .section > h2 { padding: 8px 0; border-top: var(--line-2); }
 .section > h2 .marker { margin-right: 10px; }
 
 /* boxes, grids, tables */
 .box { border: var(--line); padding: 12px; }
-.box + .box { border-top: 0; }
 .box.thick { border: var(--line-2); }
 .grid { display: grid; border-top: var(--line); border-left: var(--line); }
 .grid > * { border-right: var(--line); border-bottom: var(--line); padding: 10px 12px; min-width: 0; }
@@ -79,11 +80,13 @@ button, .btn { font: inherit; background: var(--ground); color: var(--ink); bord
 button:hover:not(:disabled), .btn:hover { background: var(--ink); color: var(--ground); text-decoration: none; }
 button.primary, .btn.primary { background: var(--ink); color: var(--ground); border-color: var(--ink); }
 button.primary:hover:not(:disabled) { background: var(--ground); color: var(--ink); }
-button:disabled { color: var(--disabled); border-color: var(--disabled); cursor: not-allowed; }
+button:disabled, button.primary:disabled { background: var(--ground); color: var(--disabled); border-color: var(--disabled); cursor: not-allowed; }
 button.link { border: 0; min-height: 0; padding: 0; color: var(--accent); text-decoration: underline; background: none; }
 button.link:hover:not(:disabled) { background: none; color: var(--accent); text-decoration-thickness: 2px; }
 button[aria-pressed="true"] { background: var(--ink); color: var(--ground); }
 .actions { display: flex; flex-wrap: wrap; gap: 0; }
+td .actions { flex-wrap: nowrap; }
+td .actions > button, td .actions > .btn { padding: 0 10px; }
 .actions > button, .actions > .btn { margin-right: -1px; }
 input, select, textarea { font: inherit; background: var(--ground); color: var(--ink); border: var(--line); min-height: 44px; padding: 8px 10px; width: 100%; }
 textarea { min-height: 120px; line-height: 1.5; resize: vertical; }
@@ -103,6 +106,10 @@ details + details { border-top: 0; }
 summary { cursor: pointer; padding: 10px 12px; font-weight: 700; min-height: 44px; display: flex; align-items: center; }
 summary:hover { background: var(--ink); color: var(--ground); }
 details > :not(summary) { padding: 10px 12px; border-top: var(--line); }
+details.inline { border: 0; }
+details.inline > summary { display: inline; padding: 0; min-height: 0; font-weight: 400; font-size: var(--small); color: var(--accent); text-decoration: underline; }
+details.inline > summary:hover { background: none; color: var(--accent); text-decoration-thickness: 2px; }
+details.inline > :not(summary) { padding: 6px 0 0; border-top: 0; }
 .progress { border: var(--line); height: 16px; }
 .progress > i { display: block; height: 100%; background: var(--accent); }
 .field { display: flex; flex-direction: column; gap: 4px; }
@@ -150,7 +157,6 @@ figure { margin: 0; }
 figure img { width: 100%; aspect-ratio: 1; object-fit: cover; border: var(--line); }
 figcaption { font-size: var(--small); padding: 4px 0; }
 .thumb { width: 48px; height: 48px; object-fit: cover; border: var(--line); }
-.thumb.placeholder { display: block; background: var(--ground); }
 
 /* radar */
 .radar text { font-family: var(--mono); font-size: 12px; fill: var(--ink); }

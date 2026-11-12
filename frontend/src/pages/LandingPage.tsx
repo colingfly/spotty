@@ -26,7 +26,6 @@ export default function LandingPage() {
         <span className="brand">trill</span>
         <div className="meta">
           <span>api: {api_status}</span>
-          <button onClick={() => login("/dashboard")}>connect spotify</button>
         </div>
       </header>
 

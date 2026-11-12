@@ -71,6 +71,8 @@ export default function TrackCard({ gen, queue, onChange, onDelete, onToggleFavo
         <Waveform peaks={gen.waveform} progress={progress} onSeek={(f) => { if (!isCurrent) player.play(gen, queue); if (player.duration) player.seek(f * player.duration); }} />
       )}
 
+      {compact && ready && <button onClick={() => player.play(gen, queue)}>{playing ? "pause" : "play"}</button>}
+
       {!compact && (
         <>
           <div className="actions" style={{ marginTop: 6 }}>

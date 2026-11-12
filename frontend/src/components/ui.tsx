@@ -60,5 +60,5 @@ export function Lyrics({ text }: { text: string }) {
 
 export function Thumb({ src, alt }: { src?: string | null; alt: string }) {
   if (src) return <img className="thumb" src={src} alt={alt} loading="lazy" />;
-  return <span className="thumb placeholder" aria-hidden />;
+  return null;
 }

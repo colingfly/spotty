@@ -204,7 +204,7 @@ export default function StudioPage() {
       <h1>studio</h1>
       <p className="small">composer: {llmOn ? "claude" : "template"} · gpu: {gpuOn ? "online" : "offline"}{!gpuOn ? " (previews still work)" : ""}</p>
 
-      <div className="cols" style={{ gridTemplateColumns: "minmax(0, 3fr) minmax(0, 2fr)" }}>
+      <div className="cols split">
         <div>
           <Section n="01" title="mode">
             <fieldset>
@@ -331,7 +331,7 @@ export default function StudioPage() {
           </Section>
 
           <Section n="03" title="render settings">
-            <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))" }}>
+            <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))" }}>
               <label className="field"><span className="label">preset</span>
                 <select value={preset} onChange={(e) => setPreset(e.target.value)}>
                   <option value="">none</option>

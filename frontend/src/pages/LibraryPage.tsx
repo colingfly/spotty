@@ -111,7 +111,7 @@ export default function LibraryPage() {
             <option value="plays">most played</option>
           </select>
         </label>
-        <label className="check" style={{ alignSelf: "end" }}><input type="checkbox" checked={fav} onChange={(e) => setFav(e.target.checked)} /> favorites only</label>
+        <div className="field"><span className="label">filter</span><label className="check"><input type="checkbox" checked={fav} onChange={(e) => setFav(e.target.checked)} /> favorites only</label></div>
       </div>
 
       {loading ? <Loading what="library" /> : items.length === 0 ? (
@@ -141,9 +141,9 @@ export default function LibraryPage() {
                         </div>
                       ) : (
                         <>
-                          <span className="b break">{g.title || "untitled"}</span>{g.is_favorite ? " · favorite" : ""}
+                          <div><span className="b break">{g.title || "untitled"}</span>{g.is_favorite ? " · favorite" : ""}</div>
                           {(g.caption || (g.lyrics && g.lyrics !== "[Instrumental]")) && (
-                            <details style={{ marginTop: 6 }}>
+                            <details className="inline">
                               <summary>brief</summary>
                               {g.caption && <div className="break small">{g.caption}</div>}
                               {g.lyrics && g.lyrics !== "[Instrumental]" && <div className="small"><Lyrics text={g.lyrics} /></div>}

@@ -47,7 +47,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     const el = audioRef.current!;
     el.volume = volume;
     const onTime = () => setTime(el.currentTime || 0);
-    const onMeta = () => setDuration(isFinite(el.duration) ? el.duration : 0);
+    const onMeta = () => { if (isFinite(el.duration) && el.duration > 0) setDuration(el.duration); };
     const onPlay = () => setPlaying(true);
     const onPause = () => setPlaying(false);
     const onEnded = () => {
