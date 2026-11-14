@@ -76,9 +76,12 @@ class ACEStepClient:
                 "vocal_language": params.get("vocal_language") or "en",
                 "time_signature": str(params.get("time_signature") or "4"),
             })
-        for key in ("key_scale", "time_signature", "src_audio_path", "audio_cover_strength", "seed", "guidance_scale"):
+        for key in ("model", "key_scale", "time_signature", "src_audio_path", "audio_cover_strength", "seed", "guidance_scale"):
             if params.get(key) is not None:
                 payload[key] = params[key]
+
+        if payload.get("seed") is not None:
+            payload["use_random_seed"] = False  # the server ignores "seed" otherwise
 
         log.info("ACE-Step submit: %s", payload["prompt"][:100])
         r = requests.post(f"{self.base_url}/release_task", json=payload, headers=self._headers, timeout=30)

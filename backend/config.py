@@ -106,6 +106,8 @@ class Settings:
     default_duration_seconds: int = _safe_int(os.getenv("DEFAULT_DURATION_SECONDS", "60"), 60)
     max_duration_seconds: int = _safe_int(os.getenv("MAX_DURATION_SECONDS", "240"), 240)
     max_variations: int = _safe_int(os.getenv("MAX_VARIATIONS", "3"), 3)
+    # Until credits ship, everyone gets the pro models and features. Set false to enforce tiers.
+    pro_unlocked: bool = _safe_bool(os.getenv("PRO_UNLOCKED"), True)
     infer_steps: int = _safe_int(os.getenv("ACESTEP_INFER_STEPS", "8"), 8)
     # ACE-Step's own LM pass rewrites the caption and guesses the language before rendering.
     # It costs ~3s on a Modal L4 but ~15s of a ~22s render on an 8 GB laptop GPU; set false to skip it.

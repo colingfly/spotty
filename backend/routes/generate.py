@@ -12,10 +12,10 @@ from config import settings
 from db import SessionLocal
 from extensions import limiter
 from models import Generation, SpotifyAccount, UserTaste
-from services.acestep_client import acestep
+from services import engines
 from services.auth_tokens import require_user, verify_audio
 from services.caption_engine import MODE_TO_FEATURE_TYPE, MODES, PRESETS, ComposeRequest, ComposeResult, compose, preset_catalog
-from services.generation_service import engine_available, serialize, submit_batch, sync_generation, wake_engine
+from services.generation_service import compose_result_from, engine_available, serialize, submit_batch, sync_generation, wake_engine
 from services.spotify_client import artist_genres_with_fallback, get_artists, refresh_if_needed
 from services.taste import update_user_taste_if_stale
 
@@ -53,15 +53,28 @@ def _own_generation(db, generation_id: int) -> Optional[Generation]:
 def _resolve_fusion_artists(acct: SpotifyAccount, data: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Accept artist ids (from top artists) and/or free names (from a poster scan)."""
     out: List[Dict[str, Any]] = []
+    raw_weights = data.get("artist_weights") if isinstance(data.get("artist_weights"), dict) else {}
+
+    def weight_of(*keys: str) -> float:
+        """Weights are keyed by artist id or lower-cased name; anything unlisted counts fully."""
+        for k in keys:
+            if k in raw_weights:
+                try:
+                    return max(0.0, min(1.0, float(raw_weights[k])))
+                except (TypeError, ValueError):
+                    return 1.0
+        return 1.0
+
     ids = [str(i) for i in (data.get("artist_ids") or []) if i][:8]
     if ids:
         for a in get_artists(acct, ids):
-            out.append({"name": a["name"], "genres": artist_genres_with_fallback(a)[:6], "image": a.get("image")})
+            out.append({"name": a["name"], "genres": artist_genres_with_fallback(a)[:6], "image": a.get("image"),
+                        "weight": weight_of(str(a.get("id") or ""), a["name"].lower())})
     for name in (data.get("artist_names") or [])[:10]:
         name = str(name).strip()
         if name and not any(o["name"].lower() == name.lower() for o in out):
-            out.append({"name": name, "genres": artist_genres_with_fallback({"name": name})[:6]})
-    return out
+            out.append({"name": name, "genres": artist_genres_with_fallback({"name": name})[:6], "weight": weight_of(name.lower())})
+    return [a for a in out if a["weight"] > 0]
 
 
 def _build_request(acct: SpotifyAccount, ut: UserTaste, data: Dict[str, Any]) -> ComposeRequest:
@@ -101,6 +114,11 @@ def _build_request(acct: SpotifyAccount, ut: UserTaste, data: Dict[str, Any]) ->
         if len(fusion_artists) < (2 if mode == "fusion" else 1):
             raise ValueError("fusion needs at least two artists; festival needs at least one")
 
+    try:
+        listener_weight = max(0.0, min(1.0, float(data.get("listener_weight", 0.3))))
+    except (TypeError, ValueError):
+        listener_weight = 0.3
+
     preset = data.get("preset") or None
     if preset and preset not in PRESETS:
         raise ValueError(f"unknown preset: {preset}")
@@ -118,9 +136,30 @@ def _build_request(acct: SpotifyAccount, ut: UserTaste, data: Dict[str, Any]) ->
         lyrics_theme=theme,
         want_vocals=want_vocals,
         fusion_artists=fusion_artists,
+        listener_weight=listener_weight,
         duration=duration,
         use_llm=data.get("use_llm", True) is not False,
     )
+
+
+def _resolve_model(model_id: Any, fallback: Optional[str] = None):
+    """Returns (model, None) or (None, error response). Pro models need an entitlement."""
+    model = engines.get_model(fallback)
+    if model_id:
+        model = engines.find_model(str(model_id))
+        if model is None:
+            return None, ({"error": "bad_request", "message": f"unknown model: {model_id}"}, 400)
+    if model.tier == engines.PRO and not settings.pro_unlocked:
+        return None, ({"error": "upgrade_required", "message": f"{model.label} is a pro model."}, 402)
+    return model, None
+
+
+def _seed_from(data: Dict[str, Any]) -> Optional[int]:
+    try:
+        seed = int(data["seed"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return seed if 0 <= seed < 2**31 else None
 
 
 _KEY_RE = re.compile(r"^[A-G][#b]? (major|minor)$")
@@ -158,7 +197,13 @@ def _apply_edits(result: ComposeResult, edits: Optional[Dict[str, Any]]) -> Comp
 
 @generate_bp.get("/api/generate/presets")
 def presets():
-    return {"items": preset_catalog(), "modes": list(MODES)}
+    return {
+        "items": preset_catalog(),
+        "modes": list(MODES),
+        "models": engines.catalog(),
+        "default_model": engines.DEFAULT_MODEL_ID,
+        "pro_unlocked": settings.pro_unlocked,
+    }
 
 
 @generate_bp.get("/api/acestep/health")
@@ -207,6 +252,10 @@ def generate():
         except ValueError as e:
             return {"error": "bad_request", "message": str(e)}, 400
 
+        model, model_err = _resolve_model(data.get("model"))
+        if model_err:
+            return model_err
+
         if not engine_available():
             return {"error": "acestep_unavailable", "message": "The ACE-Step GPU server is offline."}, 503
 
@@ -226,7 +275,7 @@ def generate():
             "edited": bool(data.get("edits")),
         }
         try:
-            rows = submit_batch(db, g.sid, result, variations=variations, meta=meta)
+            rows = submit_batch(db, g.sid, result, variations=variations, meta=meta, model=model, seed=_seed_from(data))
         except Exception as e:
             log.exception("ACE-Step submit failed")
             return {"error": "generation_failed", "message": str(e)[:300]}, 502
@@ -388,6 +437,41 @@ def generation_history():
         # Opportunistically sync anything still active so the library is never stale
         gens = [sync_generation(db, gnr) if gnr.status in ("pending", "processing") else gnr for gnr in gens]
         return {"items": [serialize(gnr) for gnr in gens], "count": len(gens), "total": total, "limit": limit, "offset": offset}
+    finally:
+        db.close()
+
+
+@generate_bp.post("/api/generate/<int:generation_id>/retake")
+@require_user
+@limiter.limit(settings.rate_limit_generate)
+def retake(generation_id: int):
+    """
+    Render an existing track's brief again. By default it is a new take (new seed);
+    same_seed keeps the seed so a change to the model or the brief can be compared like for like.
+    """
+    data = request.get_json(silent=True) or {}
+    db = SessionLocal()
+    try:
+        src = _own_generation(db, generation_id)
+        if not src:
+            return {"error": "not_found"}, 404
+        src_meta = src.meta_json or {}
+        model, model_err = _resolve_model(data.get("model"), fallback=src_meta.get("model"))
+        if model_err:
+            return model_err
+        if not engine_available():
+            return {"error": "acestep_unavailable", "message": "The ACE-Step GPU server is offline."}, 503
+
+        result = _apply_edits(compose_result_from(src), data.get("edits"))
+        seed = (src.params_json or {}).get("seed") if data.get("same_seed") else None
+        meta = {k: src_meta[k] for k in ("overrides", "brief", "lyrics_theme", "fusion_artists") if k in src_meta}
+        meta.update({"retake_of": src.id, "edited": bool(data.get("edits"))})
+        try:
+            rows = submit_batch(db, g.sid, result, variations=1, meta=meta, model=model, seed=seed)
+        except Exception as e:
+            log.exception("ACE-Step submit failed")
+            return {"error": "generation_failed", "message": str(e)[:300]}, 502
+        return {"batch_id": rows[0].batch_id, "items": [serialize(r) for r in rows], "composed": result.to_dict()}, 202
     finally:
         db.close()
 

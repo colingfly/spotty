@@ -13,10 +13,11 @@ import subprocess
 import modal
 
 ACESTEP_REPO = "https://github.com/ace-step/ACE-Step-1.5.git"
-ACESTEP_COMMIT = "597cd84"  # the commit trill's client was verified against
+ACESTEP_COMMIT = "ca1e85f"  # 2026-08-29, includes the 1.5 XL (4B DiT) models; trill's client is verified against it
 ROOT = "/opt/acestep"
 PORT = 8001
-GPU = "L4"
+GPU = "L4"  # 24 GB: enough for both DiT models plus the small LM without offloading
+MODELS = ["acestep-v15-turbo", "acestep-v15-xl-turbo"]
 SCALEDOWN = 300
 
 image = (
@@ -26,10 +27,13 @@ image = (
     .run_commands(
         f"git clone {ACESTEP_REPO} {ROOT}",
         f"cd {ROOT} && git checkout {ACESTEP_COMMIT}",
-        f"cd {ROOT} && uv sync --no-dev --python 3.11",
+        f"cd {ROOT} && uv sync --frozen --no-dev --python 3.11",
     )
     .env({
         "ACESTEP_PROJECT_ROOT": ROOT,
+        # Slot 1 is the free-tier model, slot 2 the paid one; requests pick with the "model" field.
+        "ACESTEP_CONFIG_PATH": MODELS[0],
+        "ACESTEP_CONFIG_PATH2": MODELS[1],
         "ACESTEP_INIT_LLM": "true",
         "ACESTEP_LM_MODEL_PATH": "acestep-5Hz-lm-0.6B",
         "ACESTEP_DOWNLOAD_SOURCE": "huggingface",
@@ -46,9 +50,10 @@ PY = f"{ROOT}/.venv/bin/python"
 
 @app.function(volumes={f"{ROOT}/checkpoints": checkpoints}, timeout=3600)
 def download():
-    """Pull the turbo DiT, VAE, text encoder and the small LM into the volume."""
+    """Pull the main bundle (turbo DiT, VAE, text encoder), the small LM and the extra DiT models into the volume."""
     subprocess.run([PY, "-m", "acestep.model_downloader"], check=True, cwd=ROOT)
-    subprocess.run([PY, "-m", "acestep.model_downloader", "--model", "acestep-5Hz-lm-0.6B"], check=True, cwd=ROOT)
+    for name in ["acestep-5Hz-lm-0.6B", *MODELS[1:]]:
+        subprocess.run([PY, "-m", "acestep.model_downloader", "--model", name], check=True, cwd=ROOT)
     checkpoints.commit()
 
 

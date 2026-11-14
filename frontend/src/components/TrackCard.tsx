@@ -12,10 +12,14 @@ type Props = {
   onChange?: (g: Generation) => void;
   onDelete?: (g: Generation) => void;
   onToggleFavorite?: (g: Generation) => void;
+  /** Render the same brief again: a fresh take, or the same seed on another model. */
+  onRetake?: (g: Generation, opts: { same_seed?: boolean; model?: string }) => void;
+  /** Offered as "same take on …" when the track was rendered on a different model. */
+  upgradeModel?: { id: string; label: string };
   compact?: boolean;
 };
 
-export default function TrackCard({ gen, queue, onChange, onDelete, onToggleFavorite, compact = false }: Props) {
+export default function TrackCard({ gen, queue, onChange, onDelete, onToggleFavorite, onRetake, upgradeModel, compact = false }: Props) {
   const player = usePlayer();
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(gen.title || "");
@@ -42,6 +46,7 @@ export default function TrackCard({ gen, queue, onChange, onDelete, onToggleFavo
   const meta = [
     modeLabel(gen),
     engineLabel(gen.engine),
+    gen.model ? gen.model.replace(/^ace-/, "").replace(/-/g, " ") : null,
     gen.status !== "completed" ? gen.status : null,
     gen.duration_seconds ? fmtTime(gen.duration_seconds) : null,
     bpm ? `${bpm} bpm` : null,
@@ -49,6 +54,7 @@ export default function TrackCard({ gen, queue, onChange, onDelete, onToggleFavo
     relativeTime(gen.created_at),
     gen.play_count > 0 ? `${gen.play_count} play${gen.play_count === 1 ? "" : "s"}` : null,
     gen.is_favorite ? "favorite" : null,
+    !compact && typeof (gen.params as any)?.seed === "number" ? `seed ${(gen.params as any).seed}` : null,
   ].filter(Boolean).join(" · ");
 
   return (
@@ -79,6 +85,10 @@ export default function TrackCard({ gen, queue, onChange, onDelete, onToggleFavo
             {ready && <button onClick={() => player.play(gen, queue)}>{playing ? "pause" : "play"}</button>}
             {onToggleFavorite && <button aria-pressed={gen.is_favorite} onClick={() => onToggleFavorite(gen)}>{gen.is_favorite ? "unfavorite" : "favorite"}</button>}
             {onChange && !editing && <button onClick={() => { setTitle(gen.title || ""); setEditing(true); }}>rename</button>}
+            {onRetake && ready && <button onClick={() => onRetake(gen, {})}>new take</button>}
+            {onRetake && ready && upgradeModel && gen.model !== upgradeModel.id && (
+              <button onClick={() => onRetake(gen, { same_seed: true, model: upgradeModel.id })}>same take on {upgradeModel.label}</button>
+            )}
             {gen.download_url && <a className="btn" href={api.url(gen.download_url)} download>download mp3</a>}
             {onDelete && <button onClick={() => onDelete(gen)}>delete</button>}
           </div>

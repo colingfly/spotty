@@ -20,6 +20,7 @@ from models import Generation
 from services.acestep_client import STATUS_COMPLETED, STATUS_FAILED, acestep
 from services.auth_tokens import audio_url_for
 from services.caption_engine import MODE_TO_FEATURE_TYPE, ComposeResult
+from services.engines import Engine, SongModel, get_model
 from services import media
 
 log = logging.getLogger("spotty.generation")
@@ -27,8 +28,41 @@ log = logging.getLogger("spotty.generation")
 ACTIVE_STATUSES = ("pending", "processing")
 STALE_AFTER = timedelta(minutes=30)
 
+# Render backends by name. Values are looked up at call time so tests can swap the module-level client.
+ENGINES: Dict[str, Any] = {"acestep": lambda: acestep}
+
+
+def engine_for(gen: Generation) -> Engine:
+    model = get_model((gen.meta_json or {}).get("model"))
+    return ENGINES[model.engine]()
+
+
 # Rows waiting for a sleeping serverless GPU carry this prefix instead of an ACE-Step task id.
 QUEUED_PREFIX = "queued:"
+
+
+def new_seed() -> int:
+    return int.from_bytes(os.urandom(4), "big") >> 1  # 31 bits: safe for every engine
+
+
+def compose_result_from(gen: Generation) -> ComposeResult:
+    """Rebuild the brief a finished row was rendered from, for retakes."""
+    params = gen.params_json or {}
+    meta = gen.meta_json or {}
+    return ComposeResult(
+        title=gen.title or "untitled",
+        prompt=gen.caption_used or params.get("prompt") or "",
+        lyrics=gen.lyrics_used or params.get("lyrics") or "[Instrumental]",
+        bpm=int(params.get("bpm") or 120),
+        duration=int(params.get("audio_duration") or settings.default_duration_seconds),
+        key_scale=params.get("key_scale") or meta.get("key_scale"),
+        tags=list(meta.get("tags") or []),
+        rationale=meta.get("rationale") or "",
+        engine=gen.engine or "template",
+        features=dict(meta.get("features") or {}),
+        mode=meta.get("mode") or "taste",
+        preset=meta.get("preset"),
+    )
 
 
 def engine_available() -> bool:
@@ -66,23 +100,27 @@ def submit_batch(
     composed: ComposeResult,
     variations: int = 1,
     meta: Optional[Dict[str, Any]] = None,
+    model: Optional[SongModel] = None,
+    seed: Optional[int] = None,
 ) -> List[Generation]:
-    """Submit N independent ACE-Step tasks for one brief and persist a row per task."""
+    """Submit N independent render tasks for one brief and persist a row per task."""
+    model = model or get_model(None)
+    engine: Engine = ENGINES[model.engine]()
     variations = max(1, min(settings.max_variations, int(variations or 1)))
     batch_id = uuid.uuid4().hex[:12]
-    params = composed.to_acestep_params()
+    params = {**composed.to_acestep_params(), **model.engine_params()}
+    params["audio_duration"] = min(int(params["audio_duration"]), model.max_duration)
     rows: List[Generation] = []
 
     for i in range(variations):
         p = dict(params)
-        if variations > 1:
-            # Different seeds so variations actually differ
-            p["seed"] = int.from_bytes(os.urandom(4), "big")
-        if settings.acestep_serverless and not acestep.health_check():
+        # Every take records its seed so it can be reproduced or refined later.
+        p["seed"] = int(seed) if seed is not None and i == 0 else new_seed()
+        if settings.acestep_serverless and not engine.health_check():
             # Submitting into a cold start would hold this request for minutes; the worker submits it instead.
             task_id = f"{QUEUED_PREFIX}{uuid.uuid4().hex}"
         else:
-            task_id = acestep.submit_task(p)
+            task_id = engine.submit_task(p)
         gen = Generation(
             spotify_user_id=sid,
             task_id=task_id,
@@ -97,6 +135,7 @@ def submit_batch(
             meta_json={
                 **(meta or {}),
                 "mode": composed.mode,
+                "model": model.id,
                 "preset": composed.preset,
                 "tags": composed.tags,
                 "rationale": composed.rationale,
@@ -131,7 +170,8 @@ def submit_queued(db: Session, gen: Generation) -> bool:
         return False
     # Only submit to a server that just answered: a submit that times out client-side during a
     # cold start may still be delivered later, and the retry would render the track twice.
-    if not acestep.health_check(max_age=2.0):
+    engine = engine_for(gen)
+    if not engine.health_check(max_age=2.0):
         if not _is_stale(gen):
             return False
         gen.status = "failed"
@@ -139,7 +179,7 @@ def submit_queued(db: Session, gen: Generation) -> bool:
         gen.completed_at = datetime.now(timezone.utc)
     else:
         try:
-            gen.task_id = acestep.submit_task(dict(gen.params_json or {}))
+            gen.task_id = engine.submit_task(dict(gen.params_json or {}))
         except Exception as e:
             log.warning("Queued submit failed for %s: %s", gen.id, e)
             return False
@@ -150,7 +190,7 @@ def submit_queued(db: Session, gen: Generation) -> bool:
 
 
 def _save_audio(gen: Generation, file_ref: str) -> None:
-    audio_bytes = acestep.download(file_ref)
+    audio_bytes = engine_for(gen).download(file_ref)
     os.makedirs(settings.audio_output_dir, exist_ok=True)
     local_path = os.path.join(settings.audio_output_dir, f"{gen.id}.mp3")
     with open(local_path, "wb") as fp:
@@ -220,7 +260,7 @@ def sync_generation(db: Session, gen: Generation) -> Generation:
             submit_queued(db, gen)
             return gen
         try:
-            result = acestep.query_result(gen.task_id)
+            result = engine_for(gen).query_result(gen.task_id)
         except Exception as e:
             log.debug("ACE-Step poll failed for %s: %s", gen.id, e)
             return gen
@@ -249,11 +289,15 @@ def sync_active(db: Session, limit: int = 50) -> int:
     active = [g for g in active if not g.task_id.startswith(QUEUED_PREFIX)]
     if not active:
         return updated
-    try:
-        results = acestep.query_results([g.task_id for g in active])
-    except Exception as e:
-        log.debug("Batch poll failed: %s", e)
-        return updated
+    results: Dict[str, Dict[str, Any]] = {}
+    by_engine: Dict[str, List[Generation]] = {}
+    for gen in active:
+        by_engine.setdefault(get_model((gen.meta_json or {}).get("model")).engine, []).append(gen)
+    for name, gens in by_engine.items():
+        try:
+            results.update(ENGINES[name]().query_results([g.task_id for g in gens]))
+        except Exception as e:
+            log.debug("Batch poll failed for %s: %s", name, e)
     for gen in active:
         res = results.get(gen.task_id)
         if res is None:
@@ -284,6 +328,7 @@ def serialize(gen: Generation) -> Dict[str, Any]:
         "error": gen.error_message,
         "feature_type": gen.feature_type,
         "mode": meta.get("mode"),
+        "model": get_model(meta.get("model")).id,
         "engine": gen.engine,
         "batch_id": gen.batch_id,
         "variation_index": gen.variation_index,

@@ -128,7 +128,8 @@ class ComposeRequest:
     lyrics: Optional[str] = None
     lyrics_theme: Optional[str] = None
     want_vocals: bool = True
-    fusion_artists: List[Dict[str, Any]] = field(default_factory=list)  # [{name, genres}]
+    fusion_artists: List[Dict[str, Any]] = field(default_factory=list)  # [{name, genres, weight}]
+    listener_weight: float = 0.3  # how much of the listener's own profile stays in a fusion
     duration: int = 60
     use_llm: bool = True
 
@@ -200,9 +201,12 @@ def blend_artist_features(artists: List[Dict[str, Any]]) -> Dict[str, float]:
     genres: List[str] = []
     weights: List[float] = []
     for a in artists:
+        share = float(a.get("weight", 1.0) or 0)
+        if share <= 0:
+            continue
         for i, g in enumerate(a.get("genres") or []):
             genres.append(g)
-            weights.append(1.0 / (1.0 + 0.4 * i))
+            weights.append(share / (1.0 + 0.4 * i))
     if not genres:
         return {}
     return infer_audio_features(genres, weights)
@@ -329,8 +333,11 @@ def template_compose(req: ComposeRequest, feats: Dict[str, float]) -> ComposeRes
     genres = list(req.genres)
     if req.mode in ("fusion", "festival") and req.fusion_artists:
         fused: List[str] = []
-        for a in req.fusion_artists:
-            fused.extend((a.get("genres") or [])[:3])
+        # Heavier artists lead the caption and contribute more of their genre tags.
+        for a in sorted(req.fusion_artists, key=lambda a: -float(a.get("weight", 1.0) or 0)):
+            share = float(a.get("weight", 1.0) or 0)
+            if share > 0:
+                fused.extend((a.get("genres") or [])[: 3 if share >= 0.66 else 2 if share >= 0.33 else 1])
         genres = fused or genres
 
     top = _top_genres(genres)
@@ -395,8 +402,9 @@ def compose(req: ComposeRequest) -> ComposeResult:
     if req.mode in ("fusion", "festival") and req.fusion_artists:
         blended = blend_artist_features(req.fusion_artists)
         if blended:
-            # Blend 70% artists / 30% listener so the result still feels like theirs
-            base = {k: 0.7 * blended.get(k, 0) + 0.3 * float(base.get(k, 0) or 0) for k in FEATURE_KEYS}
+            # By default 70% artists / 30% listener so the result still feels like theirs
+            mine = _clamp(req.listener_weight)
+            base = {k: (1 - mine) * blended.get(k, 0) + mine * float(base.get(k, 0) or 0) for k in FEATURE_KEYS}
 
     preset = req.preset if req.preset in PRESETS else None
     feats = apply_adjustments(base, req.overrides, preset)

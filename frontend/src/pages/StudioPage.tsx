@@ -8,7 +8,7 @@ import { useBatches } from "../hooks/useBatch";
 import { useToast } from "../hooks/useToast";
 import { api } from "../lib/api";
 import { fmtTime } from "../lib/format";
-import type { Artist, AudioFeatureKey, Composed, Features, GenerateRequest, Generation, Mode, Paged, Preset, TasteProfile } from "../types";
+import type { Artist, AudioFeatureKey, Composed, Features, GenerateRequest, Generation, Mode, Paged, Preset, SongModel, TasteProfile } from "../types";
 import { AUDIO_FEATURES, FEATURE_HINTS, FEATURE_LABELS, MODES, MODE_META } from "../types";
 import { FESTIVAL_KEY } from "./ScanPage";
 
@@ -28,6 +28,9 @@ export default function StudioPage() {
 
   const [taste, setTaste] = useState<TasteProfile | null>(null);
   const [presets, setPresets] = useState<Preset[]>([]);
+  const [models, setModels] = useState<SongModel[]>([]);
+  const [model, setModel] = useState<string>("");
+  const [proUnlocked, setProUnlocked] = useState(true);
   const [topArtists, setTopArtists] = useState<Artist[]>([]);
 
   const initialMode = (params.get("mode") as Mode) || "taste";
@@ -41,6 +44,10 @@ export default function StudioPage() {
   const [duration, setDuration] = useState<number>(caps?.default_duration_seconds ?? 60);
   const [variations, setVariations] = useState(1);
   const [fusionIds, setFusionIds] = useState<string[]>([]);
+  const [fusionNames, setFusionNames] = useState<string[]>([]);
+  const [fusionInput, setFusionInput] = useState("");
+  const [weights, setWeights] = useState<Record<string, number>>({});
+  const [listenerWeight, setListenerWeight] = useState(0.3);
   const [festivalNames, setFestivalNames] = useState<string[]>([]);
   const [festivalInput, setFestivalInput] = useState("");
 
@@ -53,7 +60,12 @@ export default function StudioPage() {
 
   useEffect(() => {
     api.get<TasteProfile>("/api/me/taste").then(setTaste).catch((e) => toast.error(e.message));
-    api.get<{ items: Preset[] }>("/api/generate/presets").then((r) => setPresets(r.items)).catch(() => undefined);
+    api.get<{ items: Preset[]; models?: SongModel[]; default_model?: string; pro_unlocked?: boolean }>("/api/generate/presets").then((r) => {
+      setPresets(r.items);
+      setModels(r.models ?? []);
+      setModel((m) => m || r.default_model || "");
+      setProUnlocked(r.pro_unlocked !== false);
+    }).catch(() => undefined);
     api.get<Paged<Artist>>("/api/me/top-artists?time_range=medium_term&limit=30").then((r) => setTopArtists(r.items)).catch(() => undefined);
     const stored = sessionStorage.getItem(FESTIVAL_KEY);
     if (stored) {
@@ -90,6 +102,9 @@ export default function StudioPage() {
   const setOverride = (key: AudioFeatureKey, value: number) => setOverrides((o) => ({ ...o, [key]: value }));
   const wantVocals = vocals ?? (mode === "lyrics" ? true : taste ? taste.instrumentalness < 0.5 : true);
 
+  const currentModel = models.find((m) => m.id === model);
+  const modelMaxDur = Math.min(maxDur, currentModel?.max_duration ?? maxDur);
+
   const request = useMemo<GenerateRequest>(() => ({
     mode,
     preset: preset || null,
@@ -98,19 +113,36 @@ export default function StudioPage() {
     lyrics_theme: mode === "lyrics" && !lyrics.trim() && theme.trim() ? theme.trim() : undefined,
     brief: mode === "brief" ? brief.trim() : undefined,
     vocals: vocals === null ? undefined : vocals,
-    duration,
+    model: model || undefined,
+    duration: Math.min(duration, modelMaxDur),
     variations,
     artist_ids: mode === "fusion" ? fusionIds : undefined,
-    artist_names: mode === "festival" ? festivalNames : undefined,
-  }), [mode, preset, overrides, lyrics, theme, brief, vocals, duration, variations, fusionIds, festivalNames]);
+    artist_weights: mode === "fusion" ? weights : undefined,
+    listener_weight: mode === "fusion" ? listenerWeight : undefined,
+    artist_names: mode === "festival" ? festivalNames : mode === "fusion" && fusionNames.length ? fusionNames : undefined,
+  }), [mode, preset, overrides, lyrics, theme, brief, vocals, model, modelMaxDur, duration, variations, fusionIds, fusionNames, weights, listenerWeight, festivalNames]);
+
+  const FUSION_MAX = 6;
+  const fusionCount = fusionIds.length + fusionNames.length;
+  const blend = [
+    ...fusionIds.map((id) => ({ key: id, name: topArtists.find((a) => a.id === id)?.name ?? id, remove: () => setFusionIds((xs) => xs.filter((x) => x !== id)) })),
+    ...fusionNames.map((n) => ({ key: n.toLowerCase(), name: n, remove: () => setFusionNames((xs) => xs.filter((x) => x !== n)) })),
+  ];
+  const addFusionName = () => {
+    const n = fusionInput.trim();
+    if (!n || fusionCount >= FUSION_MAX) return;
+    const taken = fusionNames.some((x) => x.toLowerCase() === n.toLowerCase()) || blend.some((b) => b.name.toLowerCase() === n.toLowerCase());
+    if (!taken) setFusionNames((xs) => [...xs, n]);
+    setFusionInput("");
+  };
 
   const validation = useMemo<string | null>(() => {
     if (mode === "lyrics" && !lyrics.trim() && !theme.trim()) return "add lyrics, or a theme to write from.";
     if (mode === "brief" && brief.trim().length < 8) return "describe the track in a sentence.";
-    if (mode === "fusion" && fusionIds.length < 2) return "pick at least two artists.";
+    if (mode === "fusion" && fusionCount < 2) return "pick at least two artists.";
     if (mode === "festival" && festivalNames.length === 0) return "add at least one act.";
     return null;
-  }, [mode, lyrics, theme, brief, fusionIds, festivalNames]);
+  }, [mode, lyrics, theme, brief, fusionCount, festivalNames]);
 
   const compose = async () => {
     if (validation) { toast.error(validation); return; }
@@ -176,11 +208,23 @@ export default function StudioPage() {
     setFestivalInput("");
   };
 
-  const toggleFusion = (id: string) => setFusionIds((xs) => (xs.includes(id) ? xs.filter((x) => x !== id) : xs.length >= 3 ? xs : [...xs, id]));
+  const toggleFusion = (id: string) => setFusionIds((xs) => (xs.includes(id) ? xs.filter((x) => x !== id) : fusionCount >= FUSION_MAX ? xs : [...xs, id]));
 
   const results = batches.items;
   const completed = results.filter((g) => g.status === "completed");
   const busy = stage === "composing" || stage === "generating";
+
+  const retake = useCallback(async (g: Generation, opts: { same_seed?: boolean; model?: string }) => {
+    try {
+      const r = await api.post<{ batch_id: string; items: Generation[] }>(`/api/generate/${g.generation_id}/retake`, opts);
+      batches.track(r.batch_id, r.items);
+      toast.success(opts.model ? `rendering "${g.title || "untitled"}" again on another model.` : `rendering a new take of "${g.title || "untitled"}".`);
+    } catch (e: any) {
+      toast.error(e.message);
+    }
+  }, [batches, toast]);
+  const proModel = models.find((m) => m.tier === "pro" && proUnlocked);
+  const upgradeModel = proModel ? { id: proModel.id, label: proModel.label.toLowerCase() } : undefined;
 
   const removeResult = useCallback(async (g: Generation) => {
     try {
@@ -285,7 +329,40 @@ export default function StudioPage() {
 
             {mode === "fusion" && (
               <div className="stack">
-                <p className="small">{fusionIds.length}/3 selected · last six months</p>
+                <p className="small">{fusionCount}/{FUSION_MAX} in the blend · pick from your top artists or add any artist by name</p>
+                <div className="row">
+                  <input value={fusionInput} placeholder="any artist" maxLength={80} style={{ flex: 1, minWidth: 180 }} aria-label="add an artist by name"
+                    onChange={(e) => setFusionInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addFusionName(); } }} />
+                  <button onClick={addFusionName} disabled={!fusionInput.trim() || fusionCount >= FUSION_MAX}>add</button>
+                </div>
+                {blend.length > 0 && (
+                  <div className="table-wrap">
+                    <table>
+                      <thead><tr><th>in the blend</th><th>weight</th><th className="num">%</th><th></th></tr></thead>
+                      <tbody>
+                        {blend.map((b) => {
+                          const w = weights[b.key] ?? 1;
+                          return (
+                            <tr key={b.key}>
+                              <td>{b.name}</td>
+                              <td style={{ minWidth: 160 }}><input type="range" min={5} max={100} step={5} value={Math.round(w * 100)} aria-label={`weight of ${b.name}`}
+                                onChange={(e) => setWeights((ws) => ({ ...ws, [b.key]: Number(e.target.value) / 100 }))} /></td>
+                              <td className="num">{Math.round(w * 100)}</td>
+                              <td><button onClick={b.remove}>remove</button></td>
+                            </tr>
+                          );
+                        })}
+                        <tr>
+                          <td>your own taste</td>
+                          <td><input type="range" min={0} max={100} step={5} value={Math.round(listenerWeight * 100)} aria-label="weight of your own taste"
+                            onChange={(e) => setListenerWeight(Number(e.target.value) / 100)} /></td>
+                          <td className="num">{Math.round(listenerWeight * 100)}</td>
+                          <td></td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                )}
                 {topArtists.length === 0 ? <Loading what="artists" /> : (
                   <div className="table-wrap">
                     <table>
@@ -295,7 +372,7 @@ export default function StudioPage() {
                           const on = fusionIds.includes(a.id);
                           return (
                             <tr key={a.id}>
-                              <td><input type="checkbox" checked={on} disabled={!on && fusionIds.length >= 3} onChange={() => toggleFusion(a.id)} aria-label={`use ${a.name}`} /></td>
+                              <td><input type="checkbox" checked={on} disabled={!on && fusionCount >= FUSION_MAX} onChange={() => toggleFusion(a.id)} aria-label={`use ${a.name}`} /></td>
                               <td>{i + 1}</td>
                               <td>{a.name}</td>
                               <td className="small">{a.genres.slice(0, 3).join(", ")}</td>
@@ -338,8 +415,19 @@ export default function StudioPage() {
                   {presets.map((p) => <option key={p.id} value={p.id}>{p.label.toLowerCase()} · {p.tempo} bpm</option>)}
                 </select>
               </label>
-              <label className="field"><span className="label">length · {fmtTime(duration)}</span>
-                <input type="range" min={15} max={maxDur} step={5} value={duration} onChange={(e) => setDuration(Number(e.target.value))} />
+              {models.length > 0 && (
+                <label className="field"><span className="label">song model</span>
+                  <select value={model} onChange={(e) => setModel(e.target.value)}>
+                    {models.map((m) => (
+                      <option key={m.id} value={m.id} disabled={m.tier === "pro" && !proUnlocked}>
+                        {m.label.toLowerCase()}{m.tier === "pro" ? " · pro" : ""}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              <label className="field"><span className="label">length · {fmtTime(Math.min(duration, modelMaxDur))}</span>
+                <input type="range" min={15} max={modelMaxDur} step={5} value={Math.min(duration, modelMaxDur)} onChange={(e) => setDuration(Number(e.target.value))} />
               </label>
               <label className="field"><span className="label">takes</span>
                 <select value={variations} onChange={(e) => setVariations(Number(e.target.value))}>
@@ -392,7 +480,7 @@ export default function StudioPage() {
             {results.length === 0 && !batches.anyActive ? <div className="box">{completed.length} ready. rendered takes appear here and in the library.</div> : (
               <div>
                 {[...results].reverse().map((g) => (
-                  <TrackCard key={g.generation_id} gen={g} queue={completed} onChange={batches.update} onDelete={removeResult} onToggleFavorite={favResult} />
+                  <TrackCard key={g.generation_id} gen={g} queue={completed} onChange={batches.update} onDelete={removeResult} onToggleFavorite={favResult} onRetake={retake} upgradeModel={upgradeModel} />
                 ))}
               </div>
             )}

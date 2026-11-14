@@ -105,6 +105,69 @@ def test_serverless_engine_queues_until_awake(client, auth, fake_acestep, monkey
     assert len(fake_acestep.submitted) == 1
 
 
+def test_model_selection_and_tiers(client, auth, fake_acestep, monkeypatch):
+    import dataclasses
+
+    import routes.generate as gen_routes
+
+    cat = client.get("/api/generate/presets").get_json()
+    assert [m["id"] for m in cat["models"]] == ["ace-turbo", "ace-xl-turbo"]
+    assert cat["default_model"] == "ace-turbo"
+
+    r = client.post("/api/generate", headers=auth, json={"mode": "taste"})
+    assert r.get_json()["items"][0]["model"] == "ace-turbo"
+    assert fake_acestep.submitted[-1]["model"] == "acestep-v15-turbo"
+
+    r = client.post("/api/generate", headers=auth, json={"mode": "taste", "model": "ace-xl-turbo"})
+    assert r.status_code == 202, r.get_json()
+    assert r.get_json()["items"][0]["model"] == "ace-xl-turbo"
+    assert fake_acestep.submitted[-1]["model"] == "acestep-v15-xl-turbo"
+
+    assert client.post("/api/generate", headers=auth, json={"mode": "taste", "model": "nope"}).status_code == 400
+
+    monkeypatch.setattr(gen_routes, "settings", dataclasses.replace(gen_routes.settings, pro_unlocked=False))
+    assert client.post("/api/generate", headers=auth, json={"mode": "taste", "model": "ace-xl-turbo"}).status_code == 402
+    assert client.post("/api/generate", headers=auth, json={"mode": "taste"}).status_code == 202
+
+
+def test_retake_reuses_brief_and_controls_seed(client, auth, fake_acestep):
+    r = client.post("/api/generate", headers=auth, json={"mode": "taste", "seed": 4242, "edits": {"title": "Loop"}})
+    first = r.get_json()["items"][0]
+    assert first["params"]["seed"] == 4242
+    gid = first["generation_id"]
+
+    again = client.post(f"/api/generate/{gid}/retake", headers=auth, json={}).get_json()["items"][0]
+    assert again["caption"] == first["caption"]
+    assert again["params"]["seed"] != 4242
+    assert again["meta"]["retake_of"] == gid
+
+    same = client.post(f"/api/generate/{gid}/retake", headers=auth,
+                       json={"same_seed": True, "model": "ace-xl-turbo", "edits": {"bpm": 90}}).get_json()["items"][0]
+    assert same["params"]["seed"] == 4242
+    assert same["params"]["bpm"] == 90
+    assert same["model"] == "ace-xl-turbo"
+
+    assert client.post("/api/generate/999999/retake", headers=auth, json={}).status_code == 404
+
+
+def test_fusion_weights_shape_the_blend(client, auth, fake_acestep, monkeypatch):
+    import routes.generate as gen_routes
+
+    known = {"metallica": ["heavy metal", "metal", "hard rock"], "norah jones": ["jazz", "blues", "singer-songwriter"]}
+    monkeypatch.setattr(gen_routes, "artist_genres_with_fallback", lambda a: known[a["name"].lower()])
+    body = {"mode": "fusion", "artist_names": ["Metallica", "Norah Jones"]}
+    heavy = client.post("/api/generate/preview", headers=auth,
+                        json={**body, "artist_weights": {"metallica": 1, "norah jones": 0.1}, "listener_weight": 0}).get_json()
+    soft = client.post("/api/generate/preview", headers=auth,
+                       json={**body, "artist_weights": {"metallica": 0.1, "norah jones": 1}, "listener_weight": 0}).get_json()
+    assert heavy["composed"]["features"]["energy"] > soft["composed"]["features"]["energy"]
+    assert [a["name"] for a in heavy["fusion_artists"]] == ["Metallica", "Norah Jones"]
+
+    # Weight 0 removes an artist; fusion still needs two
+    r = client.post("/api/generate/preview", headers=auth, json={**body, "artist_weights": {"metallica": 0}})
+    assert r.status_code == 400
+
+
 def test_validation_errors(client, auth, fake_acestep):
     assert client.post("/api/generate", headers=auth, json={"mode": "nope"}).status_code == 400
     assert client.post("/api/generate", headers=auth, json={"mode": "brief"}).status_code == 400

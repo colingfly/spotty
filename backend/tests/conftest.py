@@ -155,7 +155,7 @@ def fake_acestep(monkeypatch):
     import services.generation_service as gsvc
 
     monkeypatch.setattr(auth_routes, "acestep", fake, raising=False)
-    monkeypatch.setattr(gen_routes, "acestep", fake)
+    monkeypatch.setattr(gen_routes, "acestep", fake, raising=False)
     monkeypatch.setattr(gsvc, "acestep", fake)
     monkeypatch.setattr(gsvc.media, "analyze", lambda path: (60.0, [0.1, 0.5, 1.0]))
     return fake

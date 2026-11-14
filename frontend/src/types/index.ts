@@ -52,7 +52,7 @@ export const MODE_META: Record<Mode, { label: string; short: string; blurb: stri
   taste: { label: "Taste to Track", short: "Taste", blurb: "One click. A track that sits in the middle of your library." },
   mood: { label: "Mood Sliders", short: "Mood", blurb: "Bend your profile: more energy, darker, slower, whatever tonight needs." },
   lyrics: { label: "Lyric Mode", short: "Lyrics", blurb: "Bring words, or a theme, and get them sung in your sound." },
-  fusion: { label: "Artist Fusion", short: "Fusion", blurb: "Pick two or three of your top artists and blend their worlds." },
+  fusion: { label: "Artist Fusion", short: "Fusion", blurb: "Pick any artists, weight each one, and blend their worlds." },
   brief: { label: "Creative Brief", short: "Brief", blurb: "Describe a scene or a feeling. Your profile adds the flavor." },
   festival: { label: "Festival Lineup", short: "Festival", blurb: "Feed in a lineup from a poster and capture the night." },
 };
@@ -134,6 +134,17 @@ export type Stats = {
 
 export type Preset = { id: string; label: string; emoji: string; tags: string[]; tempo: number };
 
+export type SongModel = {
+  id: string;
+  label: string;
+  description: string;
+  engine: string;
+  tier: "free" | "pro";
+  infer_steps: number;
+  max_duration: number;
+  capabilities: string[];
+};
+
 export type GenerationStatus = "pending" | "processing" | "completed" | "failed";
 
 export type Generation = {
@@ -143,6 +154,7 @@ export type Generation = {
   error: string | null;
   feature_type: string;
   mode: Mode | null;
+  model?: string;
   engine: "llm" | "template" | null;
   batch_id: string | null;
   variation_index: number | null;
@@ -187,6 +199,7 @@ export type Composed = {
 };
 
 export type GenerateRequest = {
+  model?: string;
   mode: Mode;
   overrides?: Partial<Features>;
   preset?: string | null;
@@ -198,6 +211,9 @@ export type GenerateRequest = {
   variations?: number;
   artist_ids?: string[];
   artist_names?: string[];
+  artist_weights?: Record<string, number>;
+  listener_weight?: number;
+  seed?: number;
   use_llm?: boolean;
   edits?: Partial<Pick<Composed, "title" | "prompt" | "lyrics" | "bpm" | "key_scale" | "duration">>;
 };
