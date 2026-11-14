@@ -44,7 +44,7 @@ export default function LandingPage() {
       <footer>
         <span>© {new Date().getFullYear()} trill</span>
         <span>not affiliated with spotify</span>
-        <span>api: {API_BASE.replace(/^https?:\/\//, "")}</span>
+        <span>api: {API_BASE.replace(/^https?:\/\//, "") || window.location.host}</span>
         <span>v2.0.0</span>
       </footer>
     </div>
