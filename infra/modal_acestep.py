@@ -16,7 +16,9 @@ ACESTEP_REPO = "https://github.com/ace-step/ACE-Step-1.5.git"
 ACESTEP_COMMIT = "ca1e85f"  # 2026-08-29, includes the 1.5 XL (4B DiT) models; trill's client is verified against it
 ROOT = "/opt/acestep"
 PORT = 8001
-GPU = "L4"  # 24 GB: enough for both DiT models plus the small LM without offloading
+# 24 GB cards: enough for both DiT models plus the small LM without offloading.
+# A10G is the fallback when Modal has no L4 free (seen 2026-11-14: "waiting to be scheduled on a GPU_L4 worker").
+GPU = ["L4", "A10G"]
 MODELS = ["acestep-v15-turbo", "acestep-v15-xl-turbo"]
 SCALEDOWN = 300
 
