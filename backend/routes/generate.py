@@ -15,7 +15,7 @@ from models import Generation, SpotifyAccount, UserTaste
 from services.acestep_client import acestep
 from services.auth_tokens import require_user, verify_audio
 from services.caption_engine import MODE_TO_FEATURE_TYPE, MODES, PRESETS, ComposeRequest, ComposeResult, compose, preset_catalog
-from services.generation_service import serialize, submit_batch, sync_generation
+from services.generation_service import engine_available, serialize, submit_batch, sync_generation, wake_engine
 from services.spotify_client import artist_genres_with_fallback, get_artists, refresh_if_needed
 from services.taste import update_user_taste_if_stale
 
@@ -163,7 +163,7 @@ def presets():
 
 @generate_bp.get("/api/acestep/health")
 def acestep_health():
-    return {"ok": acestep.health_check()}
+    return {"ok": engine_available()}
 
 
 # --------------------------------------------------------------------------
@@ -185,6 +185,7 @@ def preview():
             req = _build_request(acct, ut, data)
         except ValueError as e:
             return {"error": "bad_request", "message": str(e)}, 400
+        wake_engine()  # a preview usually precedes a render; start the GPU while the user reads the brief
         result = compose(req)
         return {"composed": result.to_dict(), "fusion_artists": req.fusion_artists}
     finally:
@@ -206,7 +207,7 @@ def generate():
         except ValueError as e:
             return {"error": "bad_request", "message": str(e)}, 400
 
-        if not acestep.health_check():
+        if not engine_available():
             return {"error": "acestep_unavailable", "message": "The ACE-Step GPU server is offline."}, 503
 
         result = compose(req)

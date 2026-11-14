@@ -27,6 +27,21 @@ log = logging.getLogger("spotty.generation")
 ACTIVE_STATUSES = ("pending", "processing")
 STALE_AFTER = timedelta(minutes=30)
 
+# Rows waiting for a sleeping serverless GPU carry this prefix instead of an ACE-Step task id.
+QUEUED_PREFIX = "queued:"
+
+
+def engine_available() -> bool:
+    """Whether a render can be accepted. A serverless engine is always wakeable."""
+    return settings.acestep_serverless or acestep.health_check()
+
+
+def wake_engine() -> None:
+    """Any request starts a sleeping serverless container; fire one without blocking the caller."""
+    if settings.acestep_serverless:
+        threading.Thread(target=acestep.health_check, kwargs={"max_age": 0}, daemon=True).start()
+
+
 # Per-generation locks so the worker and a client poll never download the same file twice.
 _sync_locks: Dict[int, threading.Lock] = {}
 _sync_locks_guard = threading.Lock()
@@ -63,7 +78,11 @@ def submit_batch(
         if variations > 1:
             # Different seeds so variations actually differ
             p["seed"] = int.from_bytes(os.urandom(4), "big")
-        task_id = acestep.submit_task(p)
+        if settings.acestep_serverless and not acestep.health_check():
+            # Submitting into a cold start would hold this request for minutes; the worker submits it instead.
+            task_id = f"{QUEUED_PREFIX}{uuid.uuid4().hex}"
+        else:
+            task_id = acestep.submit_task(p)
         gen = Generation(
             spotify_user_id=sid,
             task_id=task_id,
@@ -98,6 +117,37 @@ def submit_batch(
 # --------------------------------------------------------------------------
 # Sync
 # --------------------------------------------------------------------------
+
+def _is_stale(gen: Generation) -> bool:
+    created = gen.created_at
+    if created and not created.tzinfo:
+        created = created.replace(tzinfo=timezone.utc)
+    return bool(created and datetime.now(timezone.utc) - created > STALE_AFTER)
+
+
+def submit_queued(db: Session, gen: Generation) -> bool:
+    """Hand a queued row to ACE-Step once it answers. Returns True if the row changed."""
+    if not (gen.task_id or "").startswith(QUEUED_PREFIX) or gen.status not in ACTIVE_STATUSES:
+        return False
+    # Only submit to a server that just answered: a submit that times out client-side during a
+    # cold start may still be delivered later, and the retry would render the track twice.
+    if not acestep.health_check(max_age=2.0):
+        if not _is_stale(gen):
+            return False
+        gen.status = "failed"
+        gen.error_message = "The GPU server did not start in time"
+        gen.completed_at = datetime.now(timezone.utc)
+    else:
+        try:
+            gen.task_id = acestep.submit_task(dict(gen.params_json or {}))
+        except Exception as e:
+            log.warning("Queued submit failed for %s: %s", gen.id, e)
+            return False
+    db.add(gen)
+    db.commit()
+    db.refresh(gen)
+    return True
+
 
 def _save_audio(gen: Generation, file_ref: str) -> None:
     audio_bytes = acestep.download(file_ref)
@@ -166,6 +216,9 @@ def sync_generation(db: Session, gen: Generation) -> Generation:
         db.refresh(gen)
         if gen.status not in ACTIVE_STATUSES:
             return gen
+        if gen.task_id.startswith(QUEUED_PREFIX):
+            submit_queued(db, gen)
+            return gen
         try:
             result = acestep.query_result(gen.task_id)
         except Exception as e:
@@ -185,14 +238,22 @@ def sync_active(db: Session, limit: int = 50) -> int:
         .limit(limit)
         .all()
     )
+    updated = 0
+    for gen in [g for g in active if g.task_id.startswith(QUEUED_PREFIX)]:
+        lock = _lock_for(gen.id)
+        if lock.acquire(blocking=False):
+            try:
+                updated += int(submit_queued(db, gen))
+            finally:
+                lock.release()
+    active = [g for g in active if not g.task_id.startswith(QUEUED_PREFIX)]
     if not active:
-        return 0
+        return updated
     try:
         results = acestep.query_results([g.task_id for g in active])
     except Exception as e:
         log.debug("Batch poll failed: %s", e)
-        return 0
-    updated = 0
+        return updated
     for gen in active:
         res = results.get(gen.task_id)
         if res is None:

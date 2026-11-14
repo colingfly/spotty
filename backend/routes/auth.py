@@ -12,7 +12,7 @@ from config import settings
 from db import SessionLocal
 from extensions import limiter
 from models import SpotifyAccount
-from services.acestep_client import acestep
+from services.generation_service import engine_available
 from services.auth_tokens import (
     issue_oauth_state,
     issue_session_token,
@@ -135,7 +135,7 @@ def me():
             "product": acct.product,
             "needs_reauth": needs_reauth,
             "capabilities": {
-                "acestep": acestep.health_check(),
+                "acestep": engine_available(),
                 "llm": llm.status(),
                 "max_variations": settings.max_variations,
                 "max_duration_seconds": settings.max_duration_seconds,

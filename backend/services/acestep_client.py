@@ -34,6 +34,8 @@ class ACEStepClient:
         self._health_cache: Optional[bool] = None
         self._health_checked_at = 0.0
         self._lock = threading.Lock()
+        # A hosted ACE-Step server is started with ACESTEP_API_KEY and expects it as a bearer token.
+        self._headers = {"Authorization": f"Bearer {settings.acestep_api_key}"} if settings.acestep_api_key else {}
 
     # --- health -----------------------------------------------------------
 
@@ -44,7 +46,7 @@ class ACEStepClient:
                 return self._health_cache
         ok = False
         try:
-            r = requests.get(f"{self.base_url}/health", timeout=3)
+            r = requests.get(f"{self.base_url}/health", headers=self._headers, timeout=3)
             ok = r.ok
         except Exception:
             ok = False
@@ -65,12 +67,21 @@ class ACEStepClient:
             "inference_steps": int(params.get("infer_steps", settings.infer_steps)),
             "batch_size": int(params.get("batch_size", 1)),
         }
+        if not settings.lm_rewrite:
+            # The server still runs a short LM pass (~4s) to pick a key when the brief has none.
+            payload.update({
+                "thinking": False,
+                "use_cot_caption": False,
+                "use_cot_language": False,
+                "vocal_language": params.get("vocal_language") or "en",
+                "time_signature": str(params.get("time_signature") or "4"),
+            })
         for key in ("key_scale", "time_signature", "src_audio_path", "audio_cover_strength", "seed", "guidance_scale"):
             if params.get(key) is not None:
                 payload[key] = params[key]
 
         log.info("ACE-Step submit: %s", payload["prompt"][:100])
-        r = requests.post(f"{self.base_url}/release_task", json=payload, timeout=30)
+        r = requests.post(f"{self.base_url}/release_task", json=payload, headers=self._headers, timeout=30)
         r.raise_for_status()
         data = r.json()
         task_id = (data.get("data") or {}).get("task_id")
@@ -82,7 +93,7 @@ class ACEStepClient:
         """Poll several tasks at once. Returns {task_id: result_dict}."""
         if not task_ids:
             return {}
-        r = requests.post(f"{self.base_url}/query_result", json={"task_id_list": task_ids}, timeout=10)
+        r = requests.post(f"{self.base_url}/query_result", json={"task_id_list": task_ids}, headers=self._headers, timeout=10)
         r.raise_for_status()
         out: Dict[str, Dict[str, Any]] = {}
         for item in r.json().get("data", []) or []:
@@ -132,7 +143,7 @@ class ACEStepClient:
             url = file_ref
         else:
             url = f"{self.base_url}/v1/audio?path={quote(file_ref)}"
-        r = requests.get(url, timeout=120)
+        r = requests.get(url, headers=self._headers, timeout=120)
         r.raise_for_status()
         return r.content
 

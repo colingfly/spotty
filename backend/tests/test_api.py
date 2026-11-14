@@ -77,6 +77,34 @@ def test_generate_rejects_when_acestep_down(client, auth, fake_acestep):
     assert r.status_code == 503
 
 
+def test_serverless_engine_queues_until_awake(client, auth, fake_acestep, monkeypatch):
+    import dataclasses
+
+    import routes.generate as gen_routes
+    import services.generation_service as gsvc
+
+    serverless = dataclasses.replace(gsvc.settings, acestep_serverless=True)
+    monkeypatch.setattr(gsvc, "settings", serverless)
+    monkeypatch.setattr(gen_routes, "settings", serverless)
+
+    fake_acestep.healthy = False  # container asleep
+    r = client.post("/api/generate", headers=auth, json={"mode": "taste"})
+    assert r.status_code == 202, r.get_json()
+    gid = r.get_json()["items"][0]["generation_id"]
+    assert fake_acestep.submitted == []
+
+    st = client.get(f"/api/generate/status/{gid}", headers=auth).get_json()
+    assert st["status"] == "pending"
+    assert fake_acestep.submitted == []
+
+    fake_acestep.healthy = True  # container answered /health
+    client.get(f"/api/generate/status/{gid}", headers=auth)
+    assert len(fake_acestep.submitted) == 1
+    st = client.get(f"/api/generate/status/{gid}", headers=auth).get_json()
+    assert st["status"] == "completed"
+    assert len(fake_acestep.submitted) == 1
+
+
 def test_validation_errors(client, auth, fake_acestep):
     assert client.post("/api/generate", headers=auth, json={"mode": "nope"}).status_code == 400
     assert client.post("/api/generate", headers=auth, json={"mode": "brief"}).status_code == 400
