@@ -640,6 +640,7 @@ def download_stem(generation_id: int, name: str):
             mix = local_audio_path(gen)
             if mix:
                 z.write(mix, f"{base}_mix{os.path.splitext(mix)[1]}")
+            z.writestr(f"{base}_session.txt", stems.session_sheet(gen))
         resp = send_file(tmp.name, mimetype="application/zip", as_attachment=True, download_name=f"{base}_stems.zip")
         resp.call_on_close(lambda: os.path.exists(tmp.name) and os.remove(tmp.name))
         return resp

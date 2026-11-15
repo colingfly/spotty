@@ -163,3 +163,32 @@ def delete(gen: Generation) -> None:
         if info.get("url"):
             storage.delete(info["url"])
     shutil.rmtree(_dir(gen.id), ignore_errors=True)
+
+
+def session_sheet(gen: Generation) -> str:
+    """Plain-text notes that travel with the stems: what a producer needs to set up a DAW session."""
+    params = gen.params_json or {}
+    meta = gen.meta_json or {}
+    key = params.get("key_scale") or meta.get("key_scale") or "not set"
+    length = gen.duration_seconds or params.get("audio_duration") or 0
+    lines = [
+        f"title: {gen.title or 'untitled'}",
+        f"tempo: {params.get('bpm', 'not set')} bpm",
+        f"key: {key}",
+        f"time signature: {params.get('time_signature', '4')}/4",
+        f"length: {int(length // 60)}:{int(length % 60):02d}",
+        f"model: {meta.get('model', 'ace-turbo')}",
+        f"seed: {params.get('seed', 'not recorded')}",
+        "",
+        "files: vocals, drums, bass and other are 44.1 kHz WAV and sum to the mix.",
+        "import all four at bar 1 with the session tempo set to the value above.",
+        "",
+        "caption:",
+        gen.caption_used or "",
+        "",
+        "lyrics:",
+        gen.lyrics_used or "[Instrumental]",
+        "",
+    ]
+    return "
+".join(lines)

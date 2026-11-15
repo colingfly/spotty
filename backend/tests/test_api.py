@@ -294,7 +294,9 @@ def test_stems_flow(client, auth, fake_acestep, monkeypatch):
 
     z = zipfile.ZipFile(io.BytesIO(client.get(st["stems"]["zip"]).data))
     names = sorted(z.namelist())
-    assert names == sorted([f"Night Ride_120bpm_Fsharpmin_{n}" for n in ("vocals.wav", "drums.wav", "bass.wav", "other.wav", "mix.mp3")])
+    assert names == sorted([f"Night Ride_120bpm_Fsharpmin_{n}" for n in ("vocals.wav", "drums.wav", "bass.wav", "other.wav", "mix.mp3", "session.txt")])
+    sheet = z.read("Night Ride_120bpm_Fsharpmin_session.txt").decode()
+    assert "tempo: 120 bpm" in sheet and "key: F# minor" in sheet
 
 
 def _enforce_plans(monkeypatch):
