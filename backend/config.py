@@ -142,7 +142,7 @@ class Settings:
     rate_limit_default: str = os.getenv("RATE_LIMIT_DEFAULT", "240 per minute")
 
     # Misc
-    max_upload_mb: int = _safe_int(os.getenv("MAX_UPLOAD_MB", "8"), 8)
+    max_upload_mb: int = _safe_int(os.getenv("MAX_UPLOAD_MB", "20"), 20)
 
     def __post_init__(self):
         object.__setattr__(

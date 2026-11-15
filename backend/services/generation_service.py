@@ -65,6 +65,39 @@ def compose_result_from(gen: Generation) -> ComposeResult:
     )
 
 
+class SourceAudioMissing(RuntimeError):
+    pass
+
+
+def source_files(db: Session, params: Dict[str, Any]) -> Dict[str, tuple]:
+    """
+    Audio an edit task needs, loaded at submit time. Rows keep only references
+    (a trill track id or a stored upload) so a queued submit can rebuild them later.
+    """
+    files: Dict[str, tuple] = {}
+    src_id = params.get("src_generation_id")
+    if src_id:
+        src = db.get(Generation, int(src_id))
+        path = local_audio_path(src) if src else None
+        if not path:
+            raise SourceAudioMissing("The original track's audio is no longer available")
+        with open(path, "rb") as fp:
+            files["src_audio"] = (f"{src_id}.mp3", fp.read())
+    upload = params.get("src_upload")
+    if upload:
+        data = storage.read(upload.get("path") or "", upload.get("url"))
+        if data is None:
+            raise SourceAudioMissing("The reference track is no longer available; upload it again")
+        files["src_audio"] = (upload.get("name") or "reference.mp3", data)
+    return files
+
+
+def _submit(engine: Engine, db: Session, params: Dict[str, Any]) -> str:
+    files = source_files(db, params)
+    wire = {k: v for k, v in params.items() if k not in ("src_generation_id", "src_upload")}
+    return engine.submit_task(wire, files=files) if files else engine.submit_task(wire)
+
+
 def engine_available() -> bool:
     """Whether a render can be accepted. A serverless engine is always wakeable."""
     return settings.acestep_serverless or acestep.health_check()
@@ -102,13 +135,14 @@ def submit_batch(
     meta: Optional[Dict[str, Any]] = None,
     model: Optional[SongModel] = None,
     seed: Optional[int] = None,
+    extra_params: Optional[Dict[str, Any]] = None,
 ) -> List[Generation]:
     """Submit N independent render tasks for one brief and persist a row per task."""
     model = model or get_model(None)
     engine: Engine = ENGINES[model.engine]()
     variations = max(1, min(settings.max_variations, int(variations or 1)))
     batch_id = uuid.uuid4().hex[:12]
-    params = {**composed.to_acestep_params(), **model.engine_params()}
+    params = {**composed.to_acestep_params(), **model.engine_params(), **(extra_params or {})}
     params["audio_duration"] = min(int(params["audio_duration"]), model.max_duration)
     rows: List[Generation] = []
 
@@ -120,7 +154,7 @@ def submit_batch(
             # Submitting into a cold start would hold this request for minutes; the worker submits it instead.
             task_id = f"{QUEUED_PREFIX}{uuid.uuid4().hex}"
         else:
-            task_id = engine.submit_task(p)
+            task_id = _submit(engine, db, p)
         gen = Generation(
             spotify_user_id=sid,
             task_id=task_id,
@@ -179,7 +213,11 @@ def submit_queued(db: Session, gen: Generation) -> bool:
         gen.completed_at = datetime.now(timezone.utc)
     else:
         try:
-            gen.task_id = engine.submit_task(dict(gen.params_json or {}))
+            gen.task_id = _submit(engine, db, dict(gen.params_json or {}))
+        except SourceAudioMissing as e:
+            gen.status = "failed"
+            gen.error_message = str(e)
+            gen.completed_at = datetime.now(timezone.utc)
         except Exception as e:
             log.warning("Queued submit failed for %s: %s", gen.id, e)
             return False

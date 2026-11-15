@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 from flask import Blueprint, g, request, send_file
@@ -13,7 +14,7 @@ from db import SessionLocal
 from extensions import limiter
 from models import Generation, SpotifyAccount, UserTaste
 from services import engines
-from services.auth_tokens import require_user, verify_audio
+from services.auth_tokens import require_user, sign_upload, verify_audio, verify_upload
 from services.caption_engine import MODE_TO_FEATURE_TYPE, MODES, PRESETS, ComposeRequest, ComposeResult, compose, preset_catalog
 from services import storage
 from services.generation_service import compose_result_from, engine_available, local_audio_path, serialize, submit_batch, sync_generation, wake_engine
@@ -275,8 +276,27 @@ def generate():
             "fusion_artists": req.fusion_artists,
             "edited": bool(data.get("edits")),
         }
+        extra_params = None
+        reference = data.get("reference")
+        if isinstance(reference, dict) and reference.get("ref"):
+            upload = verify_upload(str(reference["ref"]), g.sid)
+            if not upload:
+                return {"error": "bad_request", "message": "that reference track has expired; upload it again"}, 400
+            if "cover" not in model.capabilities:
+                return {"error": "bad_request", "message": f"{model.label} cannot follow a reference track"}, 400
+            try:
+                strength = max(0.05, min(1.0, float(reference.get("strength", 0.5))))
+            except (TypeError, ValueError):
+                strength = 0.5
+            extra_params = {
+                "task_type": "cover",
+                "src_upload": {"path": upload["path"], "url": upload.get("url"), "name": upload.get("name")},
+                "audio_cover_strength": strength,
+            }
+            meta["reference"] = {"name": upload.get("name"), "strength": strength}
+
         try:
-            rows = submit_batch(db, g.sid, result, variations=variations, meta=meta, model=model, seed=_seed_from(data))
+            rows = submit_batch(db, g.sid, result, variations=variations, meta=meta, model=model, seed=_seed_from(data), extra_params=extra_params)
         except Exception as e:
             log.exception("ACE-Step submit failed")
             return {"error": "generation_failed", "message": str(e)[:300]}, 502
@@ -475,6 +495,88 @@ def retake(generation_id: int):
         return {"batch_id": rows[0].batch_id, "items": [serialize(r) for r in rows], "composed": result.to_dict()}, 202
     finally:
         db.close()
+
+
+@generate_bp.post("/api/generate/<int:generation_id>/repaint")
+@require_user
+@limiter.limit(settings.rate_limit_generate)
+def repaint(generation_id: int):
+    """Re-render one time range of a finished track, keeping the rest. Optional edits change the brief for that section."""
+    data = request.get_json(silent=True) or {}
+    db = SessionLocal()
+    try:
+        src = _own_generation(db, generation_id)
+        if not src:
+            return {"error": "not_found"}, 404
+        length = float(src.duration_seconds or 0)
+        if src.status != "completed" or not src.audio_path or length <= 0:
+            return {"error": "bad_request", "message": "only a finished track can be edited"}, 400
+        try:
+            start = float(data.get("start", 0))
+            end = float(data.get("end", length))
+        except (TypeError, ValueError):
+            return {"error": "bad_request", "message": "start and end must be numbers of seconds"}, 400
+        start, end = max(0.0, start), min(length, end)
+        if end - start < 2:
+            return {"error": "bad_request", "message": "pick a section at least 2 seconds long"}, 400
+
+        src_meta = src.meta_json or {}
+        model = engines.model_with("repaint", preferred=data.get("model") or src_meta.get("model"))
+        if model is None:
+            return {"error": "bad_request", "message": "no model can edit sections"}, 400
+        if model.tier == engines.PRO and not settings.pro_unlocked:
+            return {"error": "upgrade_required", "message": "editing a section is a pro feature."}, 402
+        if not engine_available():
+            return {"error": "acestep_unavailable", "message": "The ACE-Step GPU server is offline."}, 503
+
+        edits = {k: data[k] for k in ("prompt", "lyrics") if isinstance(data.get(k), str)}
+        result = _apply_edits(compose_result_from(src), edits)
+        result.duration = int(round(length))
+        result.title = f"{(src.title or 'untitled')[:70]} (edit)"
+        extra_params = {
+            "task_type": "repaint",
+            "src_generation_id": src.id,
+            "repainting_start": round(start, 2),
+            "repainting_end": round(end, 2),
+            "chunk_mask_mode": "explicit",
+        }
+        meta = {k: src_meta[k] for k in ("overrides", "brief", "lyrics_theme", "fusion_artists") if k in src_meta}
+        meta["edit"] = {"type": "repaint", "of": src.id, "start": round(start, 2), "end": round(end, 2)}
+        try:
+            rows = submit_batch(db, g.sid, result, variations=1, meta=meta, model=model, extra_params=extra_params)
+        except Exception as e:
+            log.exception("ACE-Step submit failed")
+            return {"error": "generation_failed", "message": str(e)[:300]}, 502
+        return {"batch_id": rows[0].batch_id, "items": [serialize(r) for r in rows], "composed": result.to_dict()}, 202
+    finally:
+        db.close()
+
+
+_UPLOAD_TYPES = {".mp3": "audio/mpeg", ".wav": "audio/wav", ".flac": "audio/flac", ".ogg": "audio/ogg", ".m4a": "audio/mp4"}
+
+
+@generate_bp.post("/api/uploads")
+@require_user
+@limiter.limit("20 per hour")
+def upload_reference():
+    """Store a reference track for a later render. Returns an opaque ref to pass back as reference.ref."""
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return {"error": "bad_request", "message": "attach an audio file"}, 400
+    ext = os.path.splitext(f.filename)[1].lower()
+    if ext not in _UPLOAD_TYPES:
+        return {"error": "bad_request", "message": f"use one of: {', '.join(sorted(_UPLOAD_TYPES))}"}, 400
+    data = f.read()
+    if len(data) < 1024:
+        return {"error": "bad_request", "message": "that file is empty"}, 400
+    name = (_SAFE_NAME.sub("", os.path.basename(f.filename)).strip() or f"reference{ext}")[:80]
+    key = f"{uuid.uuid4().hex}{ext}"
+    os.makedirs(settings.audio_upload_dir, exist_ok=True)
+    path = os.path.join(settings.audio_upload_dir, key)
+    with open(path, "wb") as fp:
+        fp.write(data)
+    url = storage.upload(f"uploads/{key}", data, content_type=_UPLOAD_TYPES[ext])
+    return {"ref": sign_upload(g.sid, path, url, name), "name": name, "bytes": len(data)}
 
 
 @generate_bp.post("/api/generate/<int:generation_id>/favorite")

@@ -48,6 +48,9 @@ export default function StudioPage() {
   const [fusionInput, setFusionInput] = useState("");
   const [weights, setWeights] = useState<Record<string, number>>({});
   const [listenerWeight, setListenerWeight] = useState(0.3);
+  const [reference, setReference] = useState<{ ref: string; name: string } | null>(null);
+  const [refStrength, setRefStrength] = useState(0.5);
+  const [uploading, setUploading] = useState(false);
   const [festivalNames, setFestivalNames] = useState<string[]>([]);
   const [festivalInput, setFestivalInput] = useState("");
 
@@ -104,6 +107,7 @@ export default function StudioPage() {
 
   const currentModel = models.find((m) => m.id === model);
   const modelMaxDur = Math.min(maxDur, currentModel?.max_duration ?? maxDur);
+  const canReference = !!currentModel?.capabilities.includes("cover");
 
   const request = useMemo<GenerateRequest>(() => ({
     mode,
@@ -114,13 +118,14 @@ export default function StudioPage() {
     brief: mode === "brief" ? brief.trim() : undefined,
     vocals: vocals === null ? undefined : vocals,
     model: model || undefined,
+    reference: reference && canReference ? { ref: reference.ref, strength: refStrength } : undefined,
     duration: Math.min(duration, modelMaxDur),
     variations,
     artist_ids: mode === "fusion" ? fusionIds : undefined,
     artist_weights: mode === "fusion" ? weights : undefined,
     listener_weight: mode === "fusion" ? listenerWeight : undefined,
     artist_names: mode === "festival" ? festivalNames : mode === "fusion" && fusionNames.length ? fusionNames : undefined,
-  }), [mode, preset, overrides, lyrics, theme, brief, vocals, model, modelMaxDur, duration, variations, fusionIds, fusionNames, weights, listenerWeight, festivalNames]);
+  }), [mode, preset, overrides, lyrics, theme, brief, vocals, model, modelMaxDur, reference, canReference, refStrength, duration, variations, fusionIds, fusionNames, weights, listenerWeight, festivalNames]);
 
   const FUSION_MAX = 6;
   const fusionCount = fusionIds.length + fusionNames.length;
@@ -223,6 +228,29 @@ export default function StudioPage() {
       toast.error(e.message);
     }
   }, [batches, toast]);
+  const repaint = useCallback(async (g: Generation, opts: { start: number; end: number; lyrics?: string }) => {
+    try {
+      const r = await api.post<{ batch_id: string; items: Generation[] }>(`/api/generate/${g.generation_id}/repaint`, opts);
+      batches.track(r.batch_id, r.items);
+      toast.success(`re-rendering ${fmtTime(opts.start)}–${fmtTime(opts.end)} of "${g.title || "untitled"}".`);
+    } catch (e: any) {
+      toast.error(e.message);
+    }
+  }, [batches, toast]);
+  const uploadReference = async (file: File | undefined) => {
+    if (!file) return;
+    setUploading(true);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const r = await api.post<{ ref: string; name: string }>("/api/uploads", form);
+      setReference({ ref: r.ref, name: r.name });
+    } catch (e: any) {
+      toast.error(e.message);
+    } finally {
+      setUploading(false);
+    }
+  };
   const proModel = models.find((m) => m.tier === "pro" && proUnlocked);
   const upgradeModel = proModel ? { id: proModel.id, label: proModel.label.toLowerCase() } : undefined;
 
@@ -429,6 +457,20 @@ export default function StudioPage() {
               <label className="field"><span className="label">length · {fmtTime(Math.min(duration, modelMaxDur))}</span>
                 <input type="range" min={15} max={modelMaxDur} step={5} value={Math.min(duration, modelMaxDur)} onChange={(e) => setDuration(Number(e.target.value))} />
               </label>
+              <div className="field"><span className="label">reference track</span>
+                {!canReference ? <span className="small">needs a pro song model</span> : reference ? (
+                  <>
+                    <span className="break small">{reference.name}</span>
+                    <label className="small">follow · {Math.round(refStrength * 100)}%
+                      <input type="range" min={5} max={100} step={5} value={Math.round(refStrength * 100)} aria-label="how closely to follow the reference" onChange={(e) => setRefStrength(Number(e.target.value) / 100)} />
+                    </label>
+                    <button onClick={() => setReference(null)}>remove</button>
+                  </>
+                ) : (
+                  <input type="file" accept=".mp3,.wav,.flac,.ogg,.m4a,audio/*" disabled={uploading} aria-label="upload a reference track" onChange={(e) => { void uploadReference(e.target.files?.[0]); e.target.value = ""; }} />
+                )}
+                {uploading && <span className="small">uploading…</span>}
+              </div>
               <label className="field"><span className="label">takes</span>
                 <select value={variations} onChange={(e) => setVariations(Number(e.target.value))}>
                   {Array.from({ length: maxVar }, (_, i) => i + 1).map((n) => <option key={n} value={n}>{n}</option>)}
@@ -480,7 +522,7 @@ export default function StudioPage() {
             {results.length === 0 && !batches.anyActive ? <div className="box">{completed.length} ready. rendered takes appear here and in the library.</div> : (
               <div>
                 {[...results].reverse().map((g) => (
-                  <TrackCard key={g.generation_id} gen={g} queue={completed} onChange={batches.update} onDelete={removeResult} onToggleFavorite={favResult} onRetake={retake} upgradeModel={upgradeModel} />
+                  <TrackCard key={g.generation_id} gen={g} queue={completed} onChange={batches.update} onDelete={removeResult} onToggleFavorite={favResult} onRetake={retake} upgradeModel={upgradeModel} onRepaint={repaint} />
                 ))}
               </div>
             )}

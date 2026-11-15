@@ -109,14 +109,16 @@ class FakeACEStep:
     def __init__(self):
         self.base_url = "http://fake-acestep"
         self.submitted = []
+        self.files = []
         self.healthy = True
         self.fail_next = False
 
     def health_check(self, max_age: float = 5.0):
         return self.healthy
 
-    def submit_task(self, params):
+    def submit_task(self, params, files=None):
         self.submitted.append(params)
+        self.files.append(files)
         return f"task-{uuid.uuid4().hex[:10]}"
 
     def query_results(self, task_ids):

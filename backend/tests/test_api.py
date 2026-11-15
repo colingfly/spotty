@@ -196,6 +196,56 @@ def test_audio_is_restored_from_durable_storage(client, auth, fake_acestep, monk
     assert resp.data == blobs[f"blob://audio/{gid}.mp3"]
 
 
+def test_repaint_sends_the_original_audio_and_range(client, auth, fake_acestep):
+    from db import SessionLocal
+    from models import Generation
+
+    r = client.post("/api/generate", headers=auth, json={"mode": "taste"})
+    gid = r.get_json()["items"][0]["generation_id"]
+    client.get(f"/api/generate/status/{gid}", headers=auth)
+    # The fake audio has no real duration; give the row one.
+    session = SessionLocal()
+    session.get(Generation, gid).duration_seconds = 60.0
+    session.commit()
+    session.close()
+
+    assert client.post(f"/api/generate/{gid}/repaint", headers=auth, json={"start": 10, "end": 11}).status_code == 400
+
+    r = client.post(f"/api/generate/{gid}/repaint", headers=auth, json={"start": 10, "end": 25, "lyrics": "[Chorus] new words"})
+    assert r.status_code == 202, r.get_json()
+    item = r.get_json()["items"][0]
+    sent, files = fake_acestep.submitted[-1], fake_acestep.files[-1]
+    assert sent["task_type"] == "repaint" and sent["repainting_start"] == 10 and sent["repainting_end"] == 25
+    assert sent["lyrics"] == "[Chorus] new words"
+    assert "src_generation_id" not in sent
+    assert files["src_audio"][1].startswith(b"ID3")
+    assert item["meta"]["edit"] == {"type": "repaint", "of": gid, "start": 10, "end": 25}
+    assert item["model"] == "ace-xl-turbo"  # turbo cannot repaint, so the edit moves to a model that can
+
+
+def test_reference_upload_drives_a_cover(client, auth, fake_acestep):
+    import io
+
+    bad = client.post("/api/uploads", headers=auth, data={"file": (io.BytesIO(b"x" * 4096), "notes.txt")}, content_type="multipart/form-data")
+    assert bad.status_code == 400
+    up = client.post("/api/uploads", headers=auth, data={"file": (io.BytesIO(b"RIFF" + bytes(4096)), "my demo.wav")}, content_type="multipart/form-data")
+    assert up.status_code == 200, up.get_json()
+    ref = up.get_json()["ref"]
+
+    # The free model cannot follow a reference
+    r = client.post("/api/generate", headers=auth, json={"mode": "taste", "reference": {"ref": ref, "strength": 0.4}})
+    assert r.status_code == 400
+    r = client.post("/api/generate", headers=auth, json={"mode": "taste", "model": "ace-xl-turbo", "reference": {"ref": ref, "strength": 0.4}})
+    assert r.status_code == 202, r.get_json()
+    sent, files = fake_acestep.submitted[-1], fake_acestep.files[-1]
+    assert sent["task_type"] == "cover" and sent["audio_cover_strength"] == 0.4
+    assert files["src_audio"][1].startswith(b"RIFF")
+    assert r.get_json()["items"][0]["meta"]["reference"]["strength"] == 0.4
+
+    forged = client.post("/api/generate", headers=auth, json={"mode": "taste", "model": "ace-xl-turbo", "reference": {"ref": "not-a-real-ref"}})
+    assert forged.status_code == 400
+
+
 def test_validation_errors(client, auth, fake_acestep):
     assert client.post("/api/generate", headers=auth, json={"mode": "nope"}).status_code == 400
     assert client.post("/api/generate", headers=auth, json={"mode": "brief"}).status_code == 400

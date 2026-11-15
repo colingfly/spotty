@@ -23,6 +23,7 @@ from config import settings
 
 _session_serializer = URLSafeTimedSerializer(settings.secret_key, salt="trill.session.v1")
 _audio_serializer = URLSafeTimedSerializer(settings.secret_key, salt="trill.audio.v1")
+_upload_serializer = URLSafeTimedSerializer(settings.secret_key, salt="trill.upload.v1")
 _state_serializer = URLSafeTimedSerializer(settings.secret_key, salt="trill.oauth-state.v1")
 
 
@@ -100,3 +101,16 @@ def verify_oauth_state(state: str, max_age: int = 600) -> Optional[dict]:
     except (BadSignature, SignatureExpired):
         return None
     return data if isinstance(data, dict) else None
+
+
+def sign_upload(spotify_user_id: str, path: str, url: Optional[str], name: str) -> str:
+    """An opaque handle for an uploaded reference track. Signed so a client cannot point the backend at another file or URL."""
+    return _upload_serializer.dumps({"sid": spotify_user_id, "path": path, "url": url, "name": name})
+
+
+def verify_upload(ref: str, spotify_user_id: str, max_age: int = 7 * 24 * 3600) -> Optional[dict]:
+    try:
+        data = _upload_serializer.loads(ref, max_age=max_age)
+    except (BadSignature, SignatureExpired):
+        return None
+    return data if isinstance(data, dict) and data.get("sid") == spotify_user_id else None

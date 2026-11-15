@@ -27,7 +27,7 @@ class Engine(Protocol):
     """
 
     def health_check(self, max_age: float = 5.0) -> bool: ...
-    def submit_task(self, params: Dict[str, Any]) -> str: ...
+    def submit_task(self, params: Dict[str, Any], files: Optional[Dict[str, tuple]] = None) -> str: ...
     def query_results(self, task_ids: List[str]) -> Dict[str, Dict[str, Any]]: ...
     def query_result(self, task_id: str) -> Dict[str, Any]: ...
     def download(self, file_ref: str) -> bytes: ...
@@ -94,6 +94,14 @@ def get_model(model_id: Optional[str]) -> SongModel:
 
 def find_model(model_id: Optional[str]) -> Optional[SongModel]:
     return _BY_ID.get(model_id or "")
+
+
+def model_with(capability: str, preferred: Optional[str] = None) -> Optional[SongModel]:
+    """The preferred model if it has the capability, otherwise the first model that does."""
+    want = _BY_ID.get(preferred or "")
+    if want and capability in want.capabilities:
+        return want
+    return next((m for m in CATALOG if capability in m.capabilities), None)
 
 
 def catalog() -> List[Dict[str, Any]]:

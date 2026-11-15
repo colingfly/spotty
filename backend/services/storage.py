@@ -80,3 +80,14 @@ def delete(url: str) -> None:
         requests.post(f"{_API}/delete", json={"urls": [url]}, headers=_auth(), timeout=30).raise_for_status()
     except Exception as e:
         log.warning("Blob delete failed for %s: %s", url, e)
+
+
+def read(local_path: str, url: Optional[str] = None) -> Optional[bytes]:
+    """Bytes of a stored file: from the local cache if present, otherwise from the blob store."""
+    if local_path and os.path.isfile(local_path):
+        with open(local_path, "rb") as fp:
+            return fp.read()
+    if url and restore(url, local_path):
+        with open(local_path, "rb") as fp:
+            return fp.read()
+    return None

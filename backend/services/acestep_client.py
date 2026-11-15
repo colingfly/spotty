@@ -57,7 +57,8 @@ class ACEStepClient:
 
     # --- tasks ------------------------------------------------------------
 
-    def submit_task(self, params: Dict[str, Any]) -> str:
+    def submit_task(self, params: Dict[str, Any], files: Optional[Dict[str, tuple]] = None) -> str:
+        """files maps a form field ("src_audio", "reference_audio") to (filename, bytes) for edit tasks."""
         payload = {
             "task_type": params.get("task_type", "text2music"),
             "prompt": params.get("prompt", ""),
@@ -76,7 +77,8 @@ class ACEStepClient:
                 "vocal_language": params.get("vocal_language") or "en",
                 "time_signature": str(params.get("time_signature") or "4"),
             })
-        for key in ("model", "key_scale", "time_signature", "src_audio_path", "audio_cover_strength", "seed", "guidance_scale"):
+        for key in ("model", "key_scale", "time_signature", "src_audio_path", "audio_cover_strength", "seed", "guidance_scale",
+                    "repainting_start", "repainting_end", "chunk_mask_mode", "instruction"):
             if params.get(key) is not None:
                 payload[key] = params[key]
 
@@ -84,7 +86,12 @@ class ACEStepClient:
             payload["use_random_seed"] = False  # the server ignores "seed" otherwise
 
         log.info("ACE-Step submit: %s", payload["prompt"][:100])
-        r = requests.post(f"{self.base_url}/release_task", json=payload, headers=self._headers, timeout=30)
+        if files:
+            form = {k: ("true" if v is True else "false" if v is False else str(v)) for k, v in payload.items()}
+            upload = {field: (name, data, "audio/mpeg") for field, (name, data) in files.items()}
+            r = requests.post(f"{self.base_url}/release_task", data=form, files=upload, headers=self._headers, timeout=120)
+        else:
+            r = requests.post(f"{self.base_url}/release_task", json=payload, headers=self._headers, timeout=30)
         r.raise_for_status()
         data = r.json()
         task_id = (data.get("data") or {}).get("task_id")

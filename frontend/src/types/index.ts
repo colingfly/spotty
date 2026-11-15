@@ -214,6 +214,7 @@ export type GenerateRequest = {
   artist_weights?: Record<string, number>;
   listener_weight?: number;
   seed?: number;
+  reference?: { ref: string; strength: number };
   use_llm?: boolean;
   edits?: Partial<Pick<Composed, "title" | "prompt" | "lyrics" | "bpm" | "key_scale" | "duration">>;
 };
