@@ -112,6 +112,8 @@ class Settings:
     # ACE-Step
     acestep_api_url: str = os.getenv("ACESTEP_API_URL", "http://127.0.0.1:8001")
     acestep_api_key: str = os.getenv("ACESTEP_API_KEY", "")
+    # Stem separation service (infra/modal_stems.py). Empty hides the feature. Uses the same API key.
+    stems_api_url: str = os.getenv("STEMS_API_URL", "")
     # A scale-to-zero host (Modal) answers nothing while its container boots, so "offline" there means
     # "asleep": renders are queued and submitted by the worker once the server answers /health.
     acestep_serverless: bool = _safe_bool(os.getenv("ACESTEP_SERVERLESS"), False)

@@ -237,6 +237,21 @@ export default function StudioPage() {
       toast.error(e.message);
     }
   }, [batches, toast]);
+  const makeStems = useCallback(async (g: Generation) => {
+    try {
+      let cur = await api.post<Generation>(`/api/generate/${g.generation_id}/stems`);
+      batches.update(cur);
+      // The job runs server-side; poll the track until it settles.
+      for (let i = 0; i < 90 && cur.stems?.status === "processing"; i++) {
+        await new Promise((r) => window.setTimeout(r, 4000));
+        cur = await api.get<Generation>(`/api/generate/status/${g.generation_id}`);
+        batches.update(cur);
+      }
+      if (cur.stems?.status === "ready") toast.success(`stems ready for "${g.title || "untitled"}".`);
+    } catch (e: any) {
+      toast.error(e.message);
+    }
+  }, [batches, toast]);
   const uploadReference = async (file: File | undefined) => {
     if (!file) return;
     setUploading(true);
@@ -436,7 +451,7 @@ export default function StudioPage() {
           </Section>
 
           <Section n="03" title="render settings">
-            <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))" }}>
+            <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))" }}>
               <label className="field"><span className="label">preset</span>
                 <select value={preset} onChange={(e) => setPreset(e.target.value)}>
                   <option value="">none</option>
@@ -522,7 +537,7 @@ export default function StudioPage() {
             {results.length === 0 && !batches.anyActive ? <div className="box">{completed.length} ready. rendered takes appear here and in the library.</div> : (
               <div>
                 {[...results].reverse().map((g) => (
-                  <TrackCard key={g.generation_id} gen={g} queue={completed} onChange={batches.update} onDelete={removeResult} onToggleFavorite={favResult} onRetake={retake} upgradeModel={upgradeModel} onRepaint={repaint} />
+                  <TrackCard key={g.generation_id} gen={g} queue={completed} onChange={batches.update} onDelete={removeResult} onToggleFavorite={favResult} onRetake={retake} upgradeModel={upgradeModel} onRepaint={repaint} onStems={makeStems} />
                 ))}
               </div>
             )}

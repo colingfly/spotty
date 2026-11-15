@@ -18,10 +18,12 @@ type Props = {
   upgradeModel?: { id: string; label: string };
   /** Re-render one time range of the track, optionally with new lyrics for it. */
   onRepaint?: (g: Generation, opts: { start: number; end: number; lyrics?: string }) => Promise<void> | void;
+  /** Split the track into vocals, drums, bass and other. */
+  onStems?: (g: Generation) => void;
   compact?: boolean;
 };
 
-export default function TrackCard({ gen, queue, onChange, onDelete, onToggleFavorite, onRetake, upgradeModel, onRepaint, compact = false }: Props) {
+export default function TrackCard({ gen, queue, onChange, onDelete, onToggleFavorite, onRetake, upgradeModel, onRepaint, onStems, compact = false }: Props) {
   const player = usePlayer();
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(gen.title || "");
@@ -102,8 +104,22 @@ export default function TrackCard({ gen, queue, onChange, onDelete, onToggleFavo
               <button onClick={() => onRetake(gen, { same_seed: true, model: upgradeModel.id })}>same take on {upgradeModel.label}</button>
             )}
             {gen.download_url && <a className="btn" href={api.url(gen.download_url)} download>download mp3</a>}
+            {onStems && ready && (!gen.stems || gen.stems.status === "failed") && <button onClick={() => onStems(gen)}>{gen.stems ? "retry stems" : "stems"}</button>}
             {onDelete && <button onClick={() => onDelete(gen)}>delete</button>}
           </div>
+          {gen.stems?.status === "processing" && <p className="small" role="status">separating stems… this takes up to a minute if the service is asleep.</p>}
+          {gen.stems?.status === "failed" && <p className="small">stems failed: {gen.stems.error || "unknown error"}</p>}
+          {gen.stems?.status === "ready" && gen.stems.files && (
+            <div style={{ marginTop: 8 }}>
+              <span className="label">stems · wav, 44.1 khz</span>
+              <div className="actions">
+                {["vocals", "drums", "bass", "other"].filter((n) => gen.stems!.files![n]).map((n) => (
+                  <a key={n} className="btn" href={api.url(gen.stems!.files![n])} download>{n}</a>
+                ))}
+                {gen.stems.zip && <a className="btn" href={api.url(gen.stems.zip)} download>all + mix (.zip)</a>}
+              </div>
+            </div>
+          )}
           {onRepaint && ready && length >= 4 && (
             <details style={{ marginTop: 8 }}>
               <summary>edit a section</summary>

@@ -16,7 +16,7 @@ from models import Generation, SpotifyAccount, UserTaste
 from services import engines
 from services.auth_tokens import require_user, sign_upload, verify_audio, verify_upload
 from services.caption_engine import MODE_TO_FEATURE_TYPE, MODES, PRESETS, ComposeRequest, ComposeResult, compose, preset_catalog
-from services import storage
+from services import stems, storage
 from services.generation_service import compose_result_from, engine_available, local_audio_path, serialize, submit_batch, sync_generation, wake_engine
 from services.spotify_client import artist_genres_with_fallback, get_artists, refresh_if_needed
 from services.taste import update_user_taste_if_stale
@@ -552,6 +552,71 @@ def repaint(generation_id: int):
         db.close()
 
 
+@generate_bp.post("/api/generate/<int:generation_id>/stems")
+@require_user
+@limiter.limit("30 per hour")
+def make_stems(generation_id: int):
+    """Split a finished track into vocals, drums, bass and other. Poll the track's status for the result."""
+    db = SessionLocal()
+    try:
+        gen = _own_generation(db, generation_id)
+        if not gen:
+            return {"error": "not_found"}, 404
+        if not stems.enabled():
+            return {"error": "stems_unavailable", "message": "stem separation is not configured on the server."}, 503
+        if not settings.pro_unlocked:
+            return {"error": "upgrade_required", "message": "stems are a pro feature."}, 402
+        if gen.status != "completed" or not gen.audio_path:
+            return {"error": "bad_request", "message": "only a finished track can be split into stems"}, 400
+        current = stems.state(gen)
+        if not current or current.get("status") == "failed":
+            stems.begin(db, gen)
+            db.refresh(gen)
+        return serialize(gen), 202
+    finally:
+        db.close()
+
+
+@generate_bp.get("/api/stems/<int:generation_id>/<name>")
+def download_stem(generation_id: int, name: str):
+    """One stem as WAV, or name=all for a zip of the four stems plus the full mix. Authorised like audio links."""
+    if not verify_audio(request.args.get("t", ""), generation_id):
+        return {"error": "unauthorized"}, 401
+    db = SessionLocal()
+    try:
+        gen = db.query(Generation).filter_by(id=generation_id).one_or_none()
+        state = stems.state(gen) if gen else None
+        if not state or state.get("status") != "ready":
+            return {"error": "not_found"}, 404
+        base = state.get("base") or f"trill-{gen.id}"
+        if name in stems.STEMS:
+            path = stems.local_path(gen, name)
+            if not path:
+                return {"error": "audio_file_missing"}, 404
+            return send_file(path, mimetype="audio/wav", as_attachment=True, download_name=f"{base}_{name}.wav", conditional=True)
+        if name != "all":
+            return {"error": "not_found"}, 404
+        import tempfile
+        import zipfile
+
+        tmp = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
+        tmp.close()
+        with zipfile.ZipFile(tmp.name, "w", zipfile.ZIP_STORED) as z:
+            for stem in stems.STEMS:
+                path = stems.local_path(gen, stem)
+                if not path:
+                    return {"error": "audio_file_missing"}, 404
+                z.write(path, f"{base}_{stem}.wav")
+            mix = local_audio_path(gen)
+            if mix:
+                z.write(mix, f"{base}_mix{os.path.splitext(mix)[1]}")
+        resp = send_file(tmp.name, mimetype="application/zip", as_attachment=True, download_name=f"{base}_stems.zip")
+        resp.call_on_close(lambda: os.path.exists(tmp.name) and os.remove(tmp.name))
+        return resp
+    finally:
+        db.close()
+
+
 _UPLOAD_TYPES = {".mp3": "audio/mpeg", ".wav": "audio/wav", ".flac": "audio/flac", ".ogg": "audio/ogg", ".m4a": "audio/mp4"}
 
 
@@ -646,6 +711,7 @@ def delete_generation(generation_id: int):
                 log.warning("Could not remove %s: %s", gen.audio_path, e)
         if gen.audio_blob_url:
             storage.delete(gen.audio_blob_url)
+        stems.delete(gen)
         db.delete(gen)
         db.commit()
         return {"ok": True, "deleted": generation_id}

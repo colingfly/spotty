@@ -155,6 +155,7 @@ export type Generation = {
   feature_type: string;
   mode: Mode | null;
   model?: string;
+  stems?: { status: "processing" | "ready" | "failed"; error?: string | null; files?: Record<string, string>; zip?: string } | null;
   engine: "llm" | "template" | null;
   batch_id: string | null;
   variation_index: number | null;

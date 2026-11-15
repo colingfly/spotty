@@ -246,6 +246,57 @@ def test_reference_upload_drives_a_cover(client, auth, fake_acestep):
     assert forged.status_code == 400
 
 
+def test_stems_flow(client, auth, fake_acestep, monkeypatch):
+    import dataclasses
+    import io
+    import zipfile
+
+    import routes.generate as gen_routes
+    import services.stems as stems_svc
+
+    r = client.post("/api/generate", headers=auth, json={"mode": "taste", "edits": {"title": "Night Ride", "bpm": 120, "key_scale": "F# minor"}})
+    gid = r.get_json()["items"][0]["generation_id"]
+    done = client.get(f"/api/generate/status/{gid}", headers=auth).get_json()
+    assert done["stems"] is None
+
+    assert client.post(f"/api/generate/{gid}/stems", headers=auth).status_code == 503  # not configured
+
+    configured = dataclasses.replace(stems_svc.settings, stems_api_url="http://fake-stems")
+    monkeypatch.setattr(stems_svc, "settings", configured)
+    monkeypatch.setattr(gen_routes, "settings", configured)
+
+    def fake_separate(gen_id, src, base):
+        out = stems_svc._dir(gen_id)
+        os.makedirs(out, exist_ok=True)
+        files = {}
+        for stem in stems_svc.STEMS:
+            path = os.path.join(out, f"{stem}.wav")
+            with open(path, "wb") as fp:
+                fp.write(b"RIFF" + stem.encode())
+            files[stem] = {"path": path, "url": None}
+        return files
+
+    monkeypatch.setattr(stems_svc, "_separate", fake_separate)
+    # Run the job inline instead of on a thread so the test is deterministic.
+    monkeypatch.setattr(stems_svc.threading, "Thread", lambda target, args, **kw: type("T", (), {"start": lambda self: target(*args)})())
+
+    r = client.post(f"/api/generate/{gid}/stems", headers=auth)
+    assert r.status_code == 202, r.get_json()
+    st = client.get(f"/api/generate/status/{gid}", headers=auth).get_json()
+    assert st["stems"]["status"] == "ready"
+    assert set(st["stems"]["files"]) == {"vocals", "drums", "bass", "other"}
+    assert "stems" not in st["meta"]  # storage locations stay server-side
+
+    one = client.get(st["stems"]["files"]["drums"])
+    assert one.status_code == 200 and one.data == b"RIFFdrums"
+    assert "Night Ride_120bpm_Fsharpmin_drums.wav" in one.headers["Content-Disposition"]
+    assert client.get(f"/api/stems/{gid}/drums?t=nope").status_code == 401
+
+    z = zipfile.ZipFile(io.BytesIO(client.get(st["stems"]["zip"]).data))
+    names = sorted(z.namelist())
+    assert names == sorted([f"Night Ride_120bpm_Fsharpmin_{n}" for n in ("vocals.wav", "drums.wav", "bass.wav", "other.wav", "mix.mp3")])
+
+
 def test_validation_errors(client, auth, fake_acestep):
     assert client.post("/api/generate", headers=auth, json={"mode": "nope"}).status_code == 400
     assert client.post("/api/generate", headers=auth, json={"mode": "brief"}).status_code == 400

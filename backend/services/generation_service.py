@@ -371,8 +371,23 @@ def local_audio_path(gen: Generation) -> Optional[str]:
 # Serialize
 # --------------------------------------------------------------------------
 
+def _stems_view(gen: Generation) -> Optional[Dict[str, Any]]:
+    """What the client needs to know about stems: status and download links, never storage locations."""
+    from services import stems
+
+    s = stems.state(gen)
+    if not s:
+        return None
+    view: Dict[str, Any] = {"status": s.get("status"), "error": s.get("error")}
+    if s.get("status") == "ready":
+        token = audio_url_for(gen.id).split("?", 1)[1]
+        view["files"] = {name: f"/api/stems/{gen.id}/{name}?{token}" for name in (s.get("files") or {})}
+        view["zip"] = f"/api/stems/{gen.id}/all?{token}"
+    return view
+
+
 def serialize(gen: Generation) -> Dict[str, Any]:
-    meta = gen.meta_json or {}
+    meta = {k: v for k, v in (gen.meta_json or {}).items() if k != "stems"}
     return {
         "generation_id": gen.id,
         "task_id": gen.task_id,
@@ -381,6 +396,7 @@ def serialize(gen: Generation) -> Dict[str, Any]:
         "feature_type": gen.feature_type,
         "mode": meta.get("mode"),
         "model": get_model(meta.get("model")).id,
+        "stems": _stems_view(gen),
         "engine": gen.engine,
         "batch_id": gen.batch_id,
         "variation_index": gen.variation_index,
