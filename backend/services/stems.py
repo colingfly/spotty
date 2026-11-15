@@ -190,5 +190,4 @@ def session_sheet(gen: Generation) -> str:
         gen.lyrics_used or "[Instrumental]",
         "",
     ]
-    return "
-".join(lines)
+    return "\r\n".join(lines)  # CRLF so the sheet opens cleanly in Notepad
