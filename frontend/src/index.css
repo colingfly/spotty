@@ -132,6 +132,9 @@ details.inline > :not(summary) { padding: 6px 0 0; border-top: 0; }
 .wave { display: flex; align-items: flex-end; gap: 1px; width: 100%; cursor: pointer; }
 .wave span { flex: 1; min-width: 1px; background: var(--ink); }
 .wave span.played { background: var(--accent); }
+.wave.selectable { height: 56px; cursor: crosshair; touch-action: none; user-select: none; border: var(--line); padding: 2px; }
+.wave.selectable span { background: var(--disabled); }
+.wave.selectable span.picked { background: var(--accent); }
 
 /* player */
 .player { position: fixed; left: 0; right: 0; bottom: 0; z-index: 40; background: var(--ground); border-top: var(--line-2); min-height: var(--player-h); padding: 10px 16px; display: grid; grid-template-columns: minmax(160px, 1fr) minmax(0, 2fr) auto; gap: 8px 16px; align-items: center; }

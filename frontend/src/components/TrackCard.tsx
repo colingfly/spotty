@@ -126,7 +126,9 @@ export default function TrackCard({ gen, queue, onChange, onDelete, onToggleFavo
           {onRepaint && ready && length >= 4 && (
             <details style={{ marginTop: 8 }}>
               <summary>edit a section</summary>
-              <p className="small">re-renders only the chosen range and keeps the rest of the track. the result is saved as a new track.</p>
+              <p className="small">drag across the waveform to choose a range. only that range is re-rendered; the rest of the track is kept and the result is saved as a new version.</p>
+              <Waveform peaks={gen.waveform} bars={96} selection={{ from: from / length, to: to / length }}
+                onSelect={(f, t) => { setFrom(Math.round(f * length)); setTo(Math.round(t * length)); }} />
               <div className="row">
                 <label className="field"><span className="label">from · {fmtTime(from)}</span>
                   <input type="number" min={0} max={Math.max(0, length - 2)} step={1} value={from} onChange={(e) => setFrom(Number(e.target.value))} style={{ width: 90 }} />
