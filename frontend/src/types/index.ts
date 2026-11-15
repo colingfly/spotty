@@ -113,6 +113,7 @@ export type Me = {
   country: string | null;
   product: string | null;
   needs_reauth: boolean;
+  plan?: { plan: "free" | "studio" | "producer"; enforced: boolean; features: Record<string, boolean>; feature_tiers: Record<string, string>; free_max_duration: number };
   capabilities: {
     acestep: boolean;
     llm: { enabled: boolean; configured: boolean; model: string | null };
@@ -134,12 +135,21 @@ export type Stats = {
 
 export type Preset = { id: string; label: string; emoji: string; tags: string[]; tempo: number };
 
+export type Project = {
+  project_id: number;
+  name: string;
+  versions: number;
+  latest: Generation | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
 export type SongModel = {
   id: string;
   label: string;
   description: string;
   engine: string;
-  tier: "free" | "pro";
+  tier: "free" | "studio" | "producer";
   infer_steps: number;
   max_duration: number;
   capabilities: string[];
@@ -155,6 +165,8 @@ export type Generation = {
   feature_type: string;
   mode: Mode | null;
   model?: string;
+  project_id?: number | null;
+  parent_id?: number | null;
   stems?: { status: "processing" | "ready" | "failed"; error?: string | null; files?: Record<string, string>; zip?: string } | null;
   engine: "llm" | "template" | null;
   batch_id: string | null;
@@ -215,6 +227,7 @@ export type GenerateRequest = {
   artist_weights?: Record<string, number>;
   listener_weight?: number;
   seed?: number;
+  project_id?: number;
   reference?: { ref: string; strength: number };
   use_llm?: boolean;
   edits?: Partial<Pick<Composed, "title" | "prompt" | "lyrics" | "bpm" | "key_scale" | "duration">>;

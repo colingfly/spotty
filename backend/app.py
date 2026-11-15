@@ -53,6 +53,7 @@ def create_app(testing: bool = False) -> Flask:
 
     from routes.auth import auth_bp
     from routes.generate import generate_bp
+    from routes.projects import projects_bp
     from routes.scan import scan_bp
     from routes.spotify import spotify_bp
 
@@ -60,6 +61,7 @@ def create_app(testing: bool = False) -> Flask:
     app.register_blueprint(spotify_bp)
     app.register_blueprint(scan_bp)
     app.register_blueprint(generate_bp)
+    app.register_blueprint(projects_bp)
 
     # --- request logging + security headers --------------------------------
 

@@ -30,6 +30,7 @@ class SpotifyAccount(Base):
     avatar_url = Column(Text, nullable=True)
     country = Column(String, nullable=True)
     product = Column(String, nullable=True)  # free / premium
+    plan = Column(String, nullable=True)  # trill plan: free | studio | producer (None = free)
 
     access_token = Column(Text, nullable=False)
     refresh_token = Column(Text, nullable=True)
@@ -113,6 +114,16 @@ class ArtistEdge(Base):
     )
 
 
+class Project(Base):
+    __tablename__ = "projects"
+
+    id = Column(Integer, primary_key=True)
+    spotify_user_id = Column(String, index=True, nullable=False)
+    name = Column(String, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
 class Generation(Base):
     __tablename__ = "generations"
 
@@ -141,6 +152,10 @@ class Generation(Base):
     audio_blob_url = Column(Text, nullable=True)  # durable copy; audio_path is a local cache
     duration_seconds = Column(Float, nullable=True)
     waveform_json = Column(JSON, nullable=True)  # ~96 normalized peaks for the player
+
+    # Producer projects: which song this version belongs to and the version it was made from
+    project_id = Column(Integer, nullable=True, index=True)
+    parent_id = Column(Integer, nullable=True)
 
     title = Column(String, nullable=True)
     is_favorite = Column(Integer, nullable=False, default=0)

@@ -12,11 +12,11 @@ from flask import Blueprint, g, request, send_file
 from config import settings
 from db import SessionLocal
 from extensions import limiter
-from models import Generation, SpotifyAccount, UserTaste
+from models import Generation, Project, SpotifyAccount, UserTaste
 from services import engines
 from services.auth_tokens import require_user, sign_upload, verify_audio, verify_upload
 from services.caption_engine import MODE_TO_FEATURE_TYPE, MODES, PRESETS, ComposeRequest, ComposeResult, compose, preset_catalog
-from services import stems, storage
+from services import plans, stems, storage
 from services.generation_service import compose_result_from, engine_available, local_audio_path, serialize, submit_batch, sync_generation, wake_engine
 from services.spotify_client import artist_genres_with_fallback, get_artists, refresh_if_needed
 from services.taste import update_user_taste_if_stale
@@ -144,15 +144,19 @@ def _build_request(acct: SpotifyAccount, ut: UserTaste, data: Dict[str, Any]) ->
     )
 
 
-def _resolve_model(model_id: Any, fallback: Optional[str] = None):
-    """Returns (model, None) or (None, error response). Pro models need an entitlement."""
+def _plan(db) -> str:
+    return plans.plan_of(db.query(SpotifyAccount).filter_by(spotify_user_id=g.sid).one_or_none())
+
+
+def _resolve_model(model_id: Any, plan: str, fallback: Optional[str] = None):
+    """Returns (model, None) or (None, error response). A model needs a plan at or above its tier."""
     model = engines.get_model(fallback)
     if model_id:
         model = engines.find_model(str(model_id))
         if model is None:
             return None, ({"error": "bad_request", "message": f"unknown model: {model_id}"}, 400)
-    if model.tier == engines.PRO and not settings.pro_unlocked:
-        return None, ({"error": "upgrade_required", "message": f"{model.label} is a pro model."}, 402)
+    if not plans.tier_allows(plan, model.tier):
+        return None, ({"error": "upgrade_required", "message": f"{model.label} needs the {model.tier} plan.", "plan": plan, "needs": model.tier}, 402)
     return model, None
 
 
@@ -254,9 +258,14 @@ def generate():
         except ValueError as e:
             return {"error": "bad_request", "message": str(e)}, 400
 
-        model, model_err = _resolve_model(data.get("model"))
+        plan = plans.plan_of(acct)
+        model, model_err = _resolve_model(data.get("model"), plan)
         if model_err:
             return model_err
+        if not plans.allows(plan, "claude_lyrics"):
+            req.use_llm = False
+        if not plans.allows(plan, "long_tracks"):
+            req.duration = min(req.duration, plans.FREE_MAX_DURATION)
 
         if not engine_available():
             return {"error": "acestep_unavailable", "message": "The ACE-Step GPU server is offline."}, 503
@@ -268,6 +277,20 @@ def generate():
             variations = int(data.get("variations") or 1)
         except (TypeError, ValueError):
             variations = 1
+        if not plans.allows(plan, "takes"):
+            variations = 1
+        if not plans.allows(plan, "long_tracks"):
+            result.duration = min(result.duration, plans.FREE_MAX_DURATION)
+
+        project_id = None
+        if data.get("project_id") is not None:
+            denied = plans.denied(plan, "projects")
+            if denied:
+                return denied
+            project = db.query(Project).filter_by(id=data.get("project_id"), spotify_user_id=g.sid).one_or_none()
+            if not project:
+                return {"error": "not_found", "message": "no such project"}, 404
+            project_id = project.id
 
         meta = {
             "overrides": req.overrides,
@@ -279,6 +302,9 @@ def generate():
         extra_params = None
         reference = data.get("reference")
         if isinstance(reference, dict) and reference.get("ref"):
+            denied = plans.denied(plan, "reference")
+            if denied:
+                return denied
             upload = verify_upload(str(reference["ref"]), g.sid)
             if not upload:
                 return {"error": "bad_request", "message": "that reference track has expired; upload it again"}, 400
@@ -296,7 +322,7 @@ def generate():
             meta["reference"] = {"name": upload.get("name"), "strength": strength}
 
         try:
-            rows = submit_batch(db, g.sid, result, variations=variations, meta=meta, model=model, seed=_seed_from(data), extra_params=extra_params)
+            rows = submit_batch(db, g.sid, result, variations=variations, meta=meta, model=model, seed=_seed_from(data), extra_params=extra_params, project_id=project_id)
         except Exception as e:
             log.exception("ACE-Step submit failed")
             return {"error": "generation_failed", "message": str(e)[:300]}, 502
@@ -477,7 +503,7 @@ def retake(generation_id: int):
         if not src:
             return {"error": "not_found"}, 404
         src_meta = src.meta_json or {}
-        model, model_err = _resolve_model(data.get("model"), fallback=src_meta.get("model"))
+        model, model_err = _resolve_model(data.get("model"), _plan(db), fallback=src_meta.get("model"))
         if model_err:
             return model_err
         if not engine_available():
@@ -488,7 +514,8 @@ def retake(generation_id: int):
         meta = {k: src_meta[k] for k in ("overrides", "brief", "lyrics_theme", "fusion_artists") if k in src_meta}
         meta.update({"retake_of": src.id, "edited": bool(data.get("edits"))})
         try:
-            rows = submit_batch(db, g.sid, result, variations=1, meta=meta, model=model, seed=seed)
+            rows = submit_batch(db, g.sid, result, variations=1, meta=meta, model=model, seed=seed,
+                                project_id=src.project_id, parent_id=src.id)
         except Exception as e:
             log.exception("ACE-Step submit failed")
             return {"error": "generation_failed", "message": str(e)[:300]}, 502
@@ -524,8 +551,9 @@ def repaint(generation_id: int):
         model = engines.model_with("repaint", preferred=data.get("model") or src_meta.get("model"))
         if model is None:
             return {"error": "bad_request", "message": "no model can edit sections"}, 400
-        if model.tier == engines.PRO and not settings.pro_unlocked:
-            return {"error": "upgrade_required", "message": "editing a section is a pro feature."}, 402
+        denied = plans.denied(_plan(db), "repaint")
+        if denied:
+            return denied
         if not engine_available():
             return {"error": "acestep_unavailable", "message": "The ACE-Step GPU server is offline."}, 503
 
@@ -543,7 +571,8 @@ def repaint(generation_id: int):
         meta = {k: src_meta[k] for k in ("overrides", "brief", "lyrics_theme", "fusion_artists") if k in src_meta}
         meta["edit"] = {"type": "repaint", "of": src.id, "start": round(start, 2), "end": round(end, 2)}
         try:
-            rows = submit_batch(db, g.sid, result, variations=1, meta=meta, model=model, extra_params=extra_params)
+            rows = submit_batch(db, g.sid, result, variations=1, meta=meta, model=model, extra_params=extra_params,
+                                project_id=src.project_id, parent_id=src.id)
         except Exception as e:
             log.exception("ACE-Step submit failed")
             return {"error": "generation_failed", "message": str(e)[:300]}, 502
@@ -564,8 +593,9 @@ def make_stems(generation_id: int):
             return {"error": "not_found"}, 404
         if not stems.enabled():
             return {"error": "stems_unavailable", "message": "stem separation is not configured on the server."}, 503
-        if not settings.pro_unlocked:
-            return {"error": "upgrade_required", "message": "stems are a pro feature."}, 402
+        denied = plans.denied(_plan(db), "stems")
+        if denied:
+            return denied
         if gen.status != "completed" or not gen.audio_path:
             return {"error": "bad_request", "message": "only a finished track can be split into stems"}, 400
         current = stems.state(gen)

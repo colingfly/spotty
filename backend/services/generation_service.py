@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from config import settings
-from models import Generation
+from models import Generation, Project
 from services.acestep_client import STATUS_COMPLETED, STATUS_FAILED, acestep
 from services.auth_tokens import audio_url_for
 from services.caption_engine import MODE_TO_FEATURE_TYPE, ComposeResult
@@ -136,6 +136,8 @@ def submit_batch(
     model: Optional[SongModel] = None,
     seed: Optional[int] = None,
     extra_params: Optional[Dict[str, Any]] = None,
+    project_id: Optional[int] = None,
+    parent_id: Optional[int] = None,
 ) -> List[Generation]:
     """Submit N independent render tasks for one brief and persist a row per task."""
     model = model or get_model(None)
@@ -163,6 +165,8 @@ def submit_batch(
             engine=composed.engine,
             batch_id=batch_id,
             variation_index=i,
+            project_id=project_id,
+            parent_id=parent_id,
             caption_used=composed.prompt,
             lyrics_used=composed.lyrics,
             params_json=p,
@@ -181,6 +185,9 @@ def submit_batch(
         db.add(gen)
         rows.append(gen)
 
+    if project_id:
+        # Touch the project so the most recently worked-on one lists first.
+        db.query(Project).filter_by(id=project_id).update({"updated_at": datetime.now(timezone.utc)})
     db.commit()
     for gen in rows:
         db.refresh(gen)
@@ -397,6 +404,8 @@ def serialize(gen: Generation) -> Dict[str, Any]:
         "mode": meta.get("mode"),
         "model": get_model(meta.get("model")).id,
         "stems": _stems_view(gen),
+        "project_id": gen.project_id,
+        "parent_id": gen.parent_id,
         "engine": gen.engine,
         "batch_id": gen.batch_id,
         "variation_index": gen.variation_index,

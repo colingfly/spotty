@@ -20,10 +20,12 @@ type Props = {
   onRepaint?: (g: Generation, opts: { start: number; end: number; lyrics?: string }) => Promise<void> | void;
   /** Split the track into vocals, drums, bass and other. */
   onStems?: (g: Generation) => void;
+  /** Open this track as a producer project. */
+  onProject?: (g: Generation) => void;
   compact?: boolean;
 };
 
-export default function TrackCard({ gen, queue, onChange, onDelete, onToggleFavorite, onRetake, upgradeModel, onRepaint, onStems, compact = false }: Props) {
+export default function TrackCard({ gen, queue, onChange, onDelete, onToggleFavorite, onRetake, upgradeModel, onRepaint, onStems, onProject, compact = false }: Props) {
   const player = usePlayer();
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(gen.title || "");
@@ -105,6 +107,7 @@ export default function TrackCard({ gen, queue, onChange, onDelete, onToggleFavo
             )}
             {gen.download_url && <a className="btn" href={api.url(gen.download_url)} download>download mp3</a>}
             {onStems && ready && (!gen.stems || gen.stems.status === "failed") && <button onClick={() => onStems(gen)}>{gen.stems ? "retry stems" : "stems"}</button>}
+            {onProject && ready && <button onClick={() => onProject(gen)}>{gen.project_id ? "open project" : "open in producer"}</button>}
             {onDelete && <button onClick={() => onDelete(gen)}>delete</button>}
           </div>
           {gen.stems?.status === "processing" && <p className="small" role="status">separating stems… this takes up to a minute if the service is asleep.</p>}

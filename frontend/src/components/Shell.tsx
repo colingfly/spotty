@@ -7,6 +7,7 @@ import PlayerBar from "./PlayerBar";
 const LINKS = [
   { to: "/dashboard", label: "profile" },
   { to: "/studio", label: "studio" },
+  { to: "/producer", label: "producer" },
   { to: "/library", label: "library" },
   { to: "/scan", label: "scan" },
 ];

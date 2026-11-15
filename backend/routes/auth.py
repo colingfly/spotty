@@ -12,6 +12,7 @@ from config import settings
 from db import SessionLocal
 from extensions import limiter
 from models import SpotifyAccount
+from services import plans
 from services.generation_service import engine_available
 from services.auth_tokens import (
     issue_oauth_state,
@@ -134,6 +135,7 @@ def me():
             "country": acct.country,
             "product": acct.product,
             "needs_reauth": needs_reauth,
+            "plan": plans.describe(plans.plan_of(acct)),
             "capabilities": {
                 "acestep": engine_available(),
                 "llm": llm.status(),

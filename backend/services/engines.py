@@ -15,7 +15,8 @@ from typing import Any, Dict, List, Optional, Protocol, Tuple
 from config import settings
 
 FREE = "free"
-PRO = "pro"
+STUDIO = "studio"
+PRODUCER = "producer"
 
 
 class Engine(Protocol):
@@ -40,7 +41,7 @@ class SongModel:
     description: str
     engine: str                       # key into generation_service.ENGINES
     engine_model: Optional[str]       # the engine's own name for it
-    tier: str                         # free | pro
+    tier: str                         # the lowest plan that can use it: free | studio | producer
     infer_steps: int
     max_duration: int                 # seconds
     capabilities: Tuple[str, ...]     # vocals, repaint, extend, cover
@@ -76,7 +77,7 @@ CATALOG: List[SongModel] = [
         description="ACE-Step 1.5 XL turbo: 4B model, 8 steps. Higher fidelity, slightly slower.",
         engine="acestep",
         engine_model="acestep-v15-xl-turbo",
-        tier=PRO,
+        tier=STUDIO,
         infer_steps=8,
         max_duration=settings.max_duration_seconds,
         capabilities=("vocals", "repaint", "extend", "cover"),

@@ -125,7 +125,7 @@ def test_model_selection_and_tiers(client, auth, fake_acestep, monkeypatch):
 
     assert client.post("/api/generate", headers=auth, json={"mode": "taste", "model": "nope"}).status_code == 400
 
-    monkeypatch.setattr(gen_routes, "settings", dataclasses.replace(gen_routes.settings, pro_unlocked=False))
+    _enforce_plans(monkeypatch)
     assert client.post("/api/generate", headers=auth, json={"mode": "taste", "model": "ace-xl-turbo"}).status_code == 402
     assert client.post("/api/generate", headers=auth, json={"mode": "taste"}).status_code == 202
 
@@ -295,6 +295,85 @@ def test_stems_flow(client, auth, fake_acestep, monkeypatch):
     z = zipfile.ZipFile(io.BytesIO(client.get(st["stems"]["zip"]).data))
     names = sorted(z.namelist())
     assert names == sorted([f"Night Ride_120bpm_Fsharpmin_{n}" for n in ("vocals.wav", "drums.wav", "bass.wav", "other.wav", "mix.mp3")])
+
+
+def _enforce_plans(monkeypatch):
+    import dataclasses
+
+    import services.plans as plans_svc
+
+    monkeypatch.setattr(plans_svc, "settings", dataclasses.replace(plans_svc.settings, pro_unlocked=False))
+
+
+def _set_plan(plan):
+    from db import SessionLocal
+    from models import SpotifyAccount
+
+    session = SessionLocal()
+    session.query(SpotifyAccount).update({"plan": plan})
+    session.commit()
+    session.close()
+
+
+def test_three_plans_gate_features(client, auth, fake_acestep, monkeypatch):
+    assert client.get("/api/me", headers=auth).get_json()["plan"]["plan"] == "producer"  # unlocked by default
+
+    _enforce_plans(monkeypatch)
+    me = client.get("/api/me", headers=auth).get_json()["plan"]
+    assert me["plan"] == "free" and me["enforced"] is True
+    assert me["features"] == {f: False for f in me["features"]}
+
+    # Free: fast model only, one take, one minute
+    assert client.post("/api/generate", headers=auth, json={"mode": "taste", "model": "ace-xl-turbo"}).status_code == 402
+    r = client.post("/api/generate", headers=auth, json={"mode": "taste", "variations": 3, "duration": 200})
+    assert r.status_code == 202 and len(r.get_json()["items"]) == 1
+    assert fake_acestep.submitted[-1]["audio_duration"] == 60
+    gid = r.get_json()["items"][0]["generation_id"]
+    client.get(f"/api/generate/status/{gid}", headers=auth)
+    assert client.post(f"/api/generate/{gid}/stems", headers=auth).status_code in (402, 503)
+    assert client.post("/api/projects", headers=auth, json={"generation_id": gid}).status_code == 402
+
+    # Studio: XL, takes and length, but not the producer tools
+    _set_plan("studio")
+    r = client.post("/api/generate", headers=auth, json={"mode": "taste", "model": "ace-xl-turbo", "variations": 2, "duration": 200})
+    assert r.status_code == 202 and len(r.get_json()["items"]) == 2
+    assert fake_acestep.submitted[-1]["audio_duration"] == 200
+    resp = client.post("/api/projects", headers=auth, json={"generation_id": gid})
+    assert resp.status_code == 402 and resp.get_json()["needs"] == "producer"
+
+    _set_plan("producer")
+    assert client.post("/api/projects", headers=auth, json={"generation_id": gid}).status_code == 201
+
+
+def test_project_keeps_a_version_history(client, auth, fake_acestep):
+    r = client.post("/api/generate", headers=auth, json={"mode": "taste", "edits": {"title": "Night Ride"}})
+    root = r.get_json()["items"][0]["generation_id"]
+    client.get(f"/api/generate/status/{root}", headers=auth)
+
+    p = client.post("/api/projects", headers=auth, json={"generation_id": root})
+    assert p.status_code == 201, p.get_json()
+    pid = p.get_json()["project_id"]
+    assert p.get_json()["name"] == "Night Ride"
+    # Opening the same track again returns the same project
+    assert client.post("/api/projects", headers=auth, json={"generation_id": root}).get_json()["project_id"] == pid
+
+    take = client.post(f"/api/generate/{root}/retake", headers=auth, json={}).get_json()["items"][0]
+    assert take["project_id"] == pid and take["parent_id"] == root
+    xl = client.post(f"/api/generate/{take['generation_id']}/retake", headers=auth, json={"same_seed": True, "model": "ace-xl-turbo"}).get_json()["items"][0]
+    assert xl["parent_id"] == take["generation_id"]
+    fresh = client.post("/api/generate", headers=auth, json={"mode": "taste", "project_id": pid}).get_json()["items"][0]
+    assert fresh["project_id"] == pid and fresh["parent_id"] is None
+
+    detail = client.get(f"/api/projects/{pid}", headers=auth).get_json()
+    assert [v["generation_id"] for v in detail["items"]] == [root, take["generation_id"], xl["generation_id"], fresh["generation_id"]]
+    listed = client.get("/api/projects", headers=auth).get_json()["items"]
+    assert listed[0]["project_id"] == pid and listed[0]["versions"] == 4  # most recently worked on comes first
+
+    assert client.patch(f"/api/projects/{pid}", headers=auth, json={"name": "Night Ride v2"}).get_json()["name"] == "Night Ride v2"
+    assert client.delete(f"/api/projects/{pid}", headers=auth).status_code == 200
+    # Tracks survive the project
+    assert client.get(f"/api/generate/status/{root}", headers=auth).get_json()["project_id"] is None
+    assert client.get(f"/api/projects/{pid}", headers=auth).status_code == 404
 
 
 def test_validation_errors(client, auth, fake_acestep):

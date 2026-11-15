@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import TasteRadar from "../components/TasteRadar";
 import TrackCard from "../components/TrackCard";
 import { Loading, Section, engineLabel } from "../components/ui";
@@ -8,6 +8,7 @@ import { useBatches } from "../hooks/useBatch";
 import { useToast } from "../hooks/useToast";
 import { api } from "../lib/api";
 import { fmtTime } from "../lib/format";
+import { openProject } from "./ProducerPage";
 import type { Artist, AudioFeatureKey, Composed, Features, GenerateRequest, Generation, Mode, Paged, Preset, SongModel, TasteProfile } from "../types";
 import { AUDIO_FEATURES, FEATURE_HINTS, FEATURE_LABELS, MODES, MODE_META } from "../types";
 import { FESTIVAL_KEY } from "./ScanPage";
@@ -33,6 +34,7 @@ export default function StudioPage() {
   const [proUnlocked, setProUnlocked] = useState(true);
   const [topArtists, setTopArtists] = useState<Artist[]>([]);
 
+  const projectId = Number(params.get("project")) || undefined;
   const initialMode = (params.get("mode") as Mode) || "taste";
   const [mode, setMode] = useState<Mode>(MODES.includes(initialMode) ? initialMode : "taste");
   const [preset, setPreset] = useState<string>("");
@@ -118,6 +120,7 @@ export default function StudioPage() {
     brief: mode === "brief" ? brief.trim() : undefined,
     vocals: vocals === null ? undefined : vocals,
     model: model || undefined,
+    project_id: projectId,
     reference: reference && canReference ? { ref: reference.ref, strength: refStrength } : undefined,
     duration: Math.min(duration, modelMaxDur),
     variations,
@@ -125,7 +128,7 @@ export default function StudioPage() {
     artist_weights: mode === "fusion" ? weights : undefined,
     listener_weight: mode === "fusion" ? listenerWeight : undefined,
     artist_names: mode === "festival" ? festivalNames : mode === "fusion" && fusionNames.length ? fusionNames : undefined,
-  }), [mode, preset, overrides, lyrics, theme, brief, vocals, model, modelMaxDur, reference, canReference, refStrength, duration, variations, fusionIds, fusionNames, weights, listenerWeight, festivalNames]);
+  }), [mode, preset, overrides, lyrics, theme, brief, vocals, model, projectId, modelMaxDur, reference, canReference, refStrength, duration, variations, fusionIds, fusionNames, weights, listenerWeight, festivalNames]);
 
   const FUSION_MAX = 6;
   const fusionCount = fusionIds.length + fusionNames.length;
@@ -266,7 +269,18 @@ export default function StudioPage() {
       setUploading(false);
     }
   };
-  const proModel = models.find((m) => m.tier === "pro" && proUnlocked);
+  const rank = { free: 0, studio: 1, producer: 2 } as const;
+  const myPlan = me?.plan?.plan ?? (proUnlocked ? "producer" : "free");
+  const canUse = (m: SongModel) => rank[myPlan] >= rank[m.tier];
+  const proModel = models.find((m) => m.tier !== "free" && canUse(m));
+  const navigate = useNavigate();
+  const toProject = useCallback(async (g: Generation) => {
+    try {
+      navigate(`/producer/${g.project_id ?? (await openProject(g.generation_id))}`);
+    } catch (e: any) {
+      toast.error(e.message);
+    }
+  }, [navigate, toast]);
   const upgradeModel = proModel ? { id: proModel.id, label: proModel.label.toLowerCase() } : undefined;
 
   const removeResult = useCallback(async (g: Generation) => {
@@ -289,6 +303,7 @@ export default function StudioPage() {
   return (
     <div>
       <h1>studio</h1>
+      {projectId && <p className="notice">new renders are added to <Link to={`/producer/${projectId}`}>project {projectId}</Link>.</p>}
       <p className="small">composer: {llmOn ? "claude" : "template"} · gpu: {gpuOn ? "online" : "offline"}{!gpuOn ? " (previews still work)" : ""}</p>
 
       <div className="cols split">
@@ -462,8 +477,8 @@ export default function StudioPage() {
                 <label className="field"><span className="label">song model</span>
                   <select value={model} onChange={(e) => setModel(e.target.value)}>
                     {models.map((m) => (
-                      <option key={m.id} value={m.id} disabled={m.tier === "pro" && !proUnlocked}>
-                        {m.label.toLowerCase()}{m.tier === "pro" ? " · pro" : ""}
+                      <option key={m.id} value={m.id} disabled={!canUse(m)}>
+                        {m.label.toLowerCase()}{m.tier !== "free" ? ` · ${m.tier}` : ""}
                       </option>
                     ))}
                   </select>
@@ -473,7 +488,7 @@ export default function StudioPage() {
                 <input type="range" min={15} max={modelMaxDur} step={5} value={Math.min(duration, modelMaxDur)} onChange={(e) => setDuration(Number(e.target.value))} />
               </label>
               <div className="field"><span className="label">reference track</span>
-                {!canReference ? <span className="small">needs a pro song model</span> : reference ? (
+                {!canReference ? <span className="small">needs a studio song model</span> : reference ? (
                   <>
                     <span className="break small">{reference.name}</span>
                     <label className="small">follow · {Math.round(refStrength * 100)}%
@@ -537,7 +552,7 @@ export default function StudioPage() {
             {results.length === 0 && !batches.anyActive ? <div className="box">{completed.length} ready. rendered takes appear here and in the library.</div> : (
               <div>
                 {[...results].reverse().map((g) => (
-                  <TrackCard key={g.generation_id} gen={g} queue={completed} onChange={batches.update} onDelete={removeResult} onToggleFavorite={favResult} onRetake={retake} upgradeModel={upgradeModel} onRepaint={repaint} onStems={makeStems} />
+                  <TrackCard key={g.generation_id} gen={g} queue={completed} onChange={batches.update} onDelete={removeResult} onToggleFavorite={favResult} onRetake={retake} upgradeModel={upgradeModel} onRepaint={repaint} onStems={makeStems} onProject={toProject} />
                 ))}
               </div>
             )}

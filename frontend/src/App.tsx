@@ -7,6 +7,7 @@ import { ToastProvider } from "./hooks/useToast";
 import DashboardPage from "./pages/DashboardPage";
 import LandingPage from "./pages/LandingPage";
 import LibraryPage from "./pages/LibraryPage";
+import ProducerPage from "./pages/ProducerPage";
 import ScanPage from "./pages/ScanPage";
 import StudioPage from "./pages/StudioPage";
 
@@ -24,7 +25,8 @@ function Routed() {
 
   useEffect(() => {
     const titles: Record<string, string> = { "/dashboard": "profile", "/studio": "studio", "/library": "library", "/scan": "scan" };
-    document.title = titles[location.pathname] ? `${titles[location.pathname]} · trill` : "trill";
+    const title = titles[location.pathname] || (location.pathname.startsWith("/producer") ? "producer" : "");
+    document.title = title ? `${title} · trill` : "trill";
   }, [location.pathname]);
 
   if (!token) {
@@ -45,6 +47,8 @@ function Routed() {
         <Route path="/generate" element={<Navigate to="/studio" replace />} />
         <Route path="/library" element={<LibraryPage />} />
         <Route path="/scan" element={<ScanPage />} />
+        <Route path="/producer" element={<ProducerPage />} />
+        <Route path="/producer/:id" element={<ProducerPage />} />
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>
     </Shell>
