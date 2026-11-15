@@ -15,7 +15,8 @@ from models import Generation, SpotifyAccount, UserTaste
 from services import engines
 from services.auth_tokens import require_user, verify_audio
 from services.caption_engine import MODE_TO_FEATURE_TYPE, MODES, PRESETS, ComposeRequest, ComposeResult, compose, preset_catalog
-from services.generation_service import compose_result_from, engine_available, serialize, submit_batch, sync_generation, wake_engine
+from services import storage
+from services.generation_service import compose_result_from, engine_available, local_audio_path, serialize, submit_batch, sync_generation, wake_engine
 from services.spotify_client import artist_genres_with_fallback, get_artists, refresh_if_needed
 from services.taste import update_user_taste_if_stale
 
@@ -541,6 +542,8 @@ def delete_generation(generation_id: int):
                 os.remove(gen.audio_path)
             except OSError as e:
                 log.warning("Could not remove %s: %s", gen.audio_path, e)
+        if gen.audio_blob_url:
+            storage.delete(gen.audio_blob_url)
         db.delete(gen)
         db.commit()
         return {"ok": True, "deleted": generation_id}
@@ -566,14 +569,15 @@ def serve_audio(generation_id: int):
         gen = db.query(Generation).filter_by(id=generation_id).one_or_none()
         if not gen or not gen.audio_path:
             return {"error": "not_found"}, 404
-        if not os.path.isfile(gen.audio_path):
+        path = local_audio_path(gen)
+        if not path:
             return {"error": "audio_file_missing"}, 404
-        ext = os.path.splitext(gen.audio_path)[1].lower()
+        ext = os.path.splitext(path)[1].lower()
         mime = {".wav": "audio/wav", ".mp3": "audio/mpeg", ".flac": "audio/flac", ".ogg": "audio/ogg"}.get(ext, "audio/mpeg")
         as_attachment = request.args.get("download") in ("1", "true")
         name = _SAFE_NAME.sub("", gen.title or f"trill-{gen.id}").strip() or f"trill-{gen.id}"
         resp = send_file(
-            gen.audio_path,
+            path,
             mimetype=mime,
             as_attachment=as_attachment,
             download_name=f"{name}{ext}",

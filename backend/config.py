@@ -65,6 +65,17 @@ def _stable_secret() -> str:
     return key
 
 
+def _database_url() -> str:
+    """Hosted Postgres URLs come as postgres:// or postgresql://; SQLAlchemy needs the psycopg 3 driver named."""
+    url = os.getenv("DATABASE_URL", "").strip()
+    if not url:
+        return f"sqlite:///{os.path.join(_HERE, 'spotty.db')}"
+    for prefix in ("postgres://", "postgresql://"):
+        if url.startswith(prefix):
+            return "postgresql+psycopg://" + url[len(prefix):]
+    return url
+
+
 @dataclass(frozen=True)
 class Settings:
     # App
@@ -74,7 +85,10 @@ class Settings:
     env: str = os.getenv("APP_ENV", "development")
 
     # Database
-    database_url: str = os.getenv("DATABASE_URL", "") or f"sqlite:///{os.path.join(_HERE, 'spotty.db')}"
+    database_url: str = _database_url()
+
+    # Durable audio storage (private Vercel Blob store). Empty keeps audio on local disk only.
+    blob_token: str = os.getenv("BLOB_READ_WRITE_TOKEN", "")
 
     # Spotify OAuth
     spotify_client_id: str = os.getenv("SPOTIFY_CLIENT_ID", "")

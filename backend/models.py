@@ -138,6 +138,7 @@ class Generation(Base):
     meta_json = Column(JSON, nullable=True)
 
     audio_path = Column(Text, nullable=True)
+    audio_blob_url = Column(Text, nullable=True)  # durable copy; audio_path is a local cache
     duration_seconds = Column(Float, nullable=True)
     waveform_json = Column(JSON, nullable=True)  # ~96 normalized peaks for the player
 

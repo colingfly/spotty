@@ -168,6 +168,34 @@ def test_fusion_weights_shape_the_blend(client, auth, fake_acestep, monkeypatch)
     assert r.status_code == 400
 
 
+def test_audio_is_restored_from_durable_storage(client, auth, fake_acestep, monkeypatch):
+    import services.generation_service as gsvc
+
+    blobs = {}
+    monkeypatch.setattr(gsvc.storage, "upload", lambda name, data, content_type="audio/mpeg": blobs.setdefault(f"blob://{name}", data) and f"blob://{name}")
+
+    def restore(url, path):
+        if url not in blobs:
+            return False
+        with open(path, "wb") as fp:
+            fp.write(blobs[url])
+        return True
+
+    monkeypatch.setattr(gsvc.storage, "restore", restore)
+
+    r = client.post("/api/generate", headers=auth, json={"mode": "taste"})
+    gid = r.get_json()["items"][0]["generation_id"]
+    st = client.get(f"/api/generate/status/{gid}", headers=auth).get_json()
+    assert st["status"] == "completed"
+    assert list(blobs) == [f"blob://audio/{gid}.mp3"]
+
+    # A redeploy wipes the disk: the file is gone but the track still plays.
+    os.remove(os.path.join(gsvc.settings.audio_output_dir, f"{gid}.mp3"))
+    resp = client.get(st["audio_url"])
+    assert resp.status_code == 200
+    assert resp.data == blobs[f"blob://audio/{gid}.mp3"]
+
+
 def test_validation_errors(client, auth, fake_acestep):
     assert client.post("/api/generate", headers=auth, json={"mode": "nope"}).status_code == 400
     assert client.post("/api/generate", headers=auth, json={"mode": "brief"}).status_code == 400

@@ -21,7 +21,7 @@ from services.acestep_client import STATUS_COMPLETED, STATUS_FAILED, acestep
 from services.auth_tokens import audio_url_for
 from services.caption_engine import MODE_TO_FEATURE_TYPE, ComposeResult
 from services.engines import Engine, SongModel, get_model
-from services import media
+from services import media, storage
 
 log = logging.getLogger("spotty.generation")
 
@@ -196,6 +196,7 @@ def _save_audio(gen: Generation, file_ref: str) -> None:
     with open(local_path, "wb") as fp:
         fp.write(audio_bytes)
     gen.audio_path = local_path
+    gen.audio_blob_url = storage.upload(f"audio/{gen.id}.mp3", audio_bytes)
     log.info("Saved audio for generation %s (%d bytes)", gen.id, len(audio_bytes))
     try:
         duration, peaks = media.analyze(local_path)
@@ -313,6 +314,19 @@ def sync_active(db: Session, limit: int = 50) -> int:
         finally:
             lock.release()
     return updated
+
+
+def local_audio_path(gen: Generation) -> Optional[str]:
+    """Path to the track's audio on disk, restoring it from durable storage if the disk was wiped."""
+    if not gen.audio_path:
+        return None
+    if os.path.isfile(gen.audio_path):
+        return gen.audio_path
+    # The stored path may be from a previous deploy's filesystem; rebuild it under the current output dir.
+    path = os.path.join(settings.audio_output_dir, f"{gen.id}.mp3")
+    if os.path.isfile(path) or (gen.audio_blob_url and storage.restore(gen.audio_blob_url, path)):
+        return path
+    return None
 
 
 # --------------------------------------------------------------------------
